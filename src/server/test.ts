@@ -33,6 +33,7 @@ import {
 import { DEFAULT_ANTIGRAVITY_LOCAL_MODEL, SANDBOX_INSTALL_COMMAND } from "../index.js";
 import { detectAntigravityAuthRequired, detectAntigravityQuotaExhausted } from "./parse.js";
 import { firstNonEmptyLine, commandLooksLike, isNonEmptyString } from "../utils.js";
+import { resolveAgyModelAndEffort } from "./execute.js";
 
 /**
  * Summarizes the combined status from a list of environmental diagnostic checks.
@@ -199,9 +200,15 @@ async function performHelloTelemetryProbe(
   })();
 
   const model = asString(config.model, DEFAULT_ANTIGRAVITY_LOCAL_MODEL).trim();
+  const effort = asString(config.effort, "").trim();
+  const resolved = resolveAgyModelAndEffort(model, effort);
+
   const args = ["--print", "Respond with hello."];
-  if (model && model !== DEFAULT_ANTIGRAVITY_LOCAL_MODEL) {
-    args.push("--model", model);
+  if (resolved.model) {
+    args.push("--model", resolved.model);
+  }
+  if (resolved.effort) {
+    args.push("--effort", resolved.effort);
   }
   args.push("--dangerously-skip-permissions");
   if (sandbox) {

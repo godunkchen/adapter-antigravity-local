@@ -198,6 +198,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const model = asString(config.model, DEFAULT_ANTIGRAVITY_LOCAL_MODEL).trim();
   const sandbox = asBoolean(config.sandbox, false);
 
+  console.log(`[antigravity] execute() called: runId="${runId}", command="${command}", model="${model}", sandbox=${sandbox}`);
+
   const workspaceContext = parseObject(context.paperclipWorkspace);
   const { cwd, effectiveWorkspaceCwd } = await resolveEffectiveCwd(config, workspaceContext);
   let effectiveExecutionCwd = adapterExecutionTargetRemoteCwd(executionTarget, cwd);
@@ -306,6 +308,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const workspaces = Array.isArray(context.paperclipWorkspaces) ? context.paperclipWorkspaces : [];
     const args = compileAgyArguments(prompt, resumeSessionId, workspaces, sandbox, extraArgs, model);
     
+    console.log(`[antigravity] Executing agy CLI: ${command} ${args.join(" ")}`);
     await onLog("stdout", `[antigravity] Executing agy CLI (model: "${model}", session: ${resumeSessionId ?? "new"})\n`);
 
     if (onMeta) {

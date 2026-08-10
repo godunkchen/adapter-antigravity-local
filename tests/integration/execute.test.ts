@@ -137,6 +137,51 @@ describe("antigravity local execution", () => {
     expect(options.env.ANTIGRAVITY_MODEL).toBe("claude-sonnet-4.6-thinking");
   });
 
+  it("configures thinkingEffort and timeoutSec via CLI flags", async () => {
+    await execute({
+      runId: "run-local-effort",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Antigravity CEO",
+        adapterType: "antigravity_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: {
+        model: "gemini-3.5-flash",
+        thinkingEffort: "low",
+        timeoutSec: 180,
+      },
+      context: {
+        paperclipWorkspace: {
+          cwd: "/home/user/workspace",
+        },
+      },
+      onLog: async () => {},
+    });
+
+    const callArgs = runAdapterExecutionTargetProcess.mock.calls[0] as unknown as [string, unknown, string, string[], { env: Record<string, string> }];
+    const cliArgs = callArgs[3];
+
+    const modelIdx = cliArgs.indexOf("--model");
+    expect(modelIdx).toBeGreaterThan(-1);
+    expect(cliArgs[modelIdx + 1]).toBe("gemini-3.5-flash");
+
+    const effortIdx = cliArgs.indexOf("--effort");
+    expect(effortIdx).toBeGreaterThan(-1);
+    expect(cliArgs[effortIdx + 1]).toBe("low");
+
+    const timeoutIdx = cliArgs.indexOf("--print-timeout");
+    expect(timeoutIdx).toBeGreaterThan(-1);
+    expect(cliArgs[timeoutIdx + 1]).toBe("180s");
+  });
+
   /**
    * Asserts that multiple active workspaces are mapped correctly using
    * repeatable `--add-dir` flags on the spawned command line.

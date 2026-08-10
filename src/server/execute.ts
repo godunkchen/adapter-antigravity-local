@@ -158,13 +158,24 @@ export interface AgyModelResolution {
  */
 export function resolveAgyModelAndEffort(rawModel?: string, rawEffort?: string): AgyModelResolution {
   const modelStr = (rawModel || "").trim();
+  const normalizedEffortInput = (rawEffort || "").trim().toLowerCase();
+
+  const userEffort =
+    normalizedEffortInput === "low" || normalizedEffortInput === "minimal"
+      ? "low"
+      : normalizedEffortInput === "high" || normalizedEffortInput === "max"
+        ? "high"
+        : normalizedEffortInput === "medium"
+          ? "medium"
+          : undefined;
+
   if (!modelStr || modelStr.toLowerCase() === "auto") {
-    return {};
+    return userEffort ? { effort: userEffort } : {};
   }
 
   const lower = modelStr.toLowerCase();
 
-  // 1. Claude models -> exact agy CLI model identifier (no --effort flag)
+  // 1. Claude models -> exact agy CLI model identifier (DO NOT accept --effort)
   if (lower.includes("sonnet") || lower === "smart") {
     return { model: "Claude Sonnet 4.6 (Thinking)" };
   }
@@ -172,45 +183,40 @@ export function resolveAgyModelAndEffort(rawModel?: string, rawEffort?: string):
     return { model: "Claude Opus 4.6 (Thinking)" };
   }
 
-  // 2. Gemini 3.5 Flash -> cheap / fast / flash (requires --effort)
+  // 2. Gemini 3.5 Flash -> cheap / fast / flash (REQUIRES --effort)
   if (lower === "cheap" || lower === "fast" || lower.includes("gemini-3.5-flash")) {
-    const effort = (rawEffort || "medium").toLowerCase();
     return {
       model: "gemini-3.5-flash",
-      effort: effort === "high" || effort === "low" ? effort : "medium",
+      effort: userEffort || "medium",
     };
   }
 
   // 3. Gemini 3.6 Flash
   if (lower.includes("gemini-3.6-flash")) {
-    const effort = (rawEffort || "high").toLowerCase();
     return {
       model: "gemini-3.6-flash",
-      effort: effort === "low" || effort === "medium" ? effort : "high",
+      effort: userEffort || "high",
     };
   }
 
   // 4. Gemini 3.1 Pro
   if (lower.includes("gemini-3.1-pro")) {
-    const effort = (rawEffort || "high").toLowerCase();
     return {
       model: "gemini-3.1-pro",
-      effort: effort === "low" || effort === "medium" ? effort : "high",
+      effort: userEffort || "high",
     };
   }
 
   // 5. GPT-OSS 120B
   if (lower.includes("gpt-oss-120b")) {
-    const effort = (rawEffort || "medium").toLowerCase();
     return {
       model: "gpt-oss-120b",
-      effort: effort === "low" || effort === "high" ? effort : "medium",
+      effort: userEffort || "medium",
     };
   }
 
   // Fallback: Custom model string passed by user
-  const effort = rawEffort ? rawEffort.trim() : undefined;
-  return { model: modelStr, ...(effort ? { effort } : {}) };
+  return { model: modelStr, ...(userEffort ? { effort: userEffort } : {}) };
 }
 
 function compileAgyArguments(
@@ -221,6 +227,7 @@ function compileAgyArguments(
   extraArgs: string[],
   model?: string,
   effort?: string,
+  timeoutSec?: number,
 ): string[] {
   const args = ["--print", prompt, "--output-format", "stream-json"];
   const resolved = resolveAgyModelAndEffort(model, effort);
@@ -229,6 +236,9 @@ function compileAgyArguments(
   }
   if (resolved.effort) {
     args.push("--effort", resolved.effort);
+  }
+  if (timeoutSec && timeoutSec > 0) {
+    args.push("--print-timeout", `${timeoutSec}s`);
   }
   if (resumeSessionId) {
     args.push("--conversation", resumeSessionId);
@@ -271,10 +281,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const promptTemplate = asString(config.promptTemplate, DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE);
   const command = asString(config.command, "agy");
   const model = asString(config.model, DEFAULT_ANTIGRAVITY_LOCAL_MODEL).trim();
-  const effort = asString(config.effort, "").trim();
+  const rawEffort = (
+    asString(config.thinkingEffort, "") ||
+    asString(config.effort, "") ||
+    asString(config.modelReasoningEffort, "") ||
+    asString(config.reasoningEffort, "")
+  ).trim();
+  const timeoutSec = asNumber(config.timeoutSec, 0) || asNumber(config.timeout, 0);
   const sandbox = asBoolean(config.sandbox, false);
 
-  console.log(`[antigravity] execute() called: runId="${runId}", command="${command}", model="${model}", effort="${effort}", sandbox=${sandbox}`);
+  console.log(`[antigravity] execute() called: runId="${runId}", command="${command}", model="${model}", effort="${rawEffort}", timeoutSec=${timeoutSec}, sandbox=${sandbox}`);
 
   const workspaceContext = parseObject(context.paperclipWorkspace);
   const { cwd, effectiveWorkspaceCwd } = await resolveEffectiveCwd(config, workspaceContext);
@@ -382,7 +398,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const runAttempt = async (resumeSessionId: string | null) => {
     const workspaces = Array.isArray(context.paperclipWorkspaces) ? context.paperclipWorkspaces : [];
-    const args = compileAgyArguments(prompt, resumeSessionId, workspaces, sandbox, extraArgs, model, effort);
+    const args = compileAgyArguments(prompt, resumeSessionId, workspaces, sandbox, extraArgs, model, rawEffort, timeoutSec);
     
     console.log(`[antigravity] Executing agy CLI: ${command} ${args.join(" ")}`);
     await onLog("stdout", `[antigravity] Executing agy CLI (model: "${model}", session: ${resumeSessionId ?? "new"})\n`);

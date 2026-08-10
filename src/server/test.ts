@@ -200,8 +200,14 @@ async function performHelloTelemetryProbe(
   })();
 
   const model = asString(config.model, DEFAULT_ANTIGRAVITY_LOCAL_MODEL).trim();
-  const effort = asString(config.effort, "").trim();
-  const resolved = resolveAgyModelAndEffort(model, effort);
+  const rawEffort = (
+    asString(config.thinkingEffort, "") ||
+    asString(config.effort, "") ||
+    asString(config.modelReasoningEffort, "") ||
+    asString(config.reasoningEffort, "")
+  ).trim();
+  const timeoutSecConfig = asNumber(config.timeoutSec, 0) || asNumber(config.timeout, 0);
+  const resolved = resolveAgyModelAndEffort(model, rawEffort);
 
   const args = ["--print", "Respond with hello."];
   if (resolved.model) {
@@ -209,6 +215,9 @@ async function performHelloTelemetryProbe(
   }
   if (resolved.effort) {
     args.push("--effort", resolved.effort);
+  }
+  if (timeoutSecConfig > 0) {
+    args.push("--print-timeout", `${timeoutSecConfig}s`);
   }
   args.push("--dangerously-skip-permissions");
   if (sandbox) {
@@ -362,11 +371,18 @@ export async function testEnvironment(
 
   // Step 5: Check configured API keys and authentication contexts
   const selectedModel = asString(config.model, DEFAULT_ANTIGRAVITY_LOCAL_MODEL).trim();
+  const selectedEffort = (
+    asString(config.thinkingEffort, "") ||
+    asString(config.effort, "") ||
+    asString(config.modelReasoningEffort, "") ||
+    asString(config.reasoningEffort, "")
+  ).trim();
+  const selectedTimeout = asNumber(config.timeoutSec, 0) || asNumber(config.timeout, 0);
   const credsCheck = checkApiCredentials(env, targetIsRemote, selectedModel);
   checks.push(credsCheck);
 
   // Step 6: Report configured model selection diagnostic check
-  console.log(`[antigravity] testEnvironment() called: model="${selectedModel}", command="${command}"`);
+  console.log(`[antigravity] testEnvironment() called: model="${selectedModel}", effort="${selectedEffort}", timeoutSec=${selectedTimeout}, command="${command}"`);
   checks.push({
     code: "antigravity_model_configured",
     level: "info",

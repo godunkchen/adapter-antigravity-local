@@ -355,7 +355,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         runId,
         target: executionTarget,
         adapterKey: "antigravity",
-        timeoutSec,
+        timeoutSec: processTimeoutSec,
         workspaceLocalDir: cwd,
         installCommand: SANDBOX_INSTALL_COMMAND,
         detectCommand: command,
@@ -377,7 +377,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       target: runtimeExecutionTarget,
       runtimeRootDir: preparedExecutionTargetRuntime?.runtimeRootDir ?? null,
       adapterKey: "antigravity",
-      timeoutSec,
+      timeoutSec: processTimeoutSec,
       hostApiToken: env.PAPERCLIP_API_KEY,
       onLog,
     });
@@ -423,7 +423,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     return await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
       cwd,
       env,
-      timeoutSec,
+      timeoutSec: processTimeoutSec,
       graceSec,
       onSpawn,
       onLog,
@@ -438,7 +438,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         exitCode: proc.exitCode,
         signal: proc.signal,
         timedOut: true,
-        errorMessage: `Timed out after ${timeoutSec}s`,
+        errorMessage: `Timed out after ${processTimeoutSec}s`,
         errorCode: null,
         clearSession: false,
       };

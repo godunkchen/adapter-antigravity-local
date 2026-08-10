@@ -146,7 +146,7 @@ function checkApiCredentials(
     return {
       code: "antigravity_api_key_present",
       level: "info",
-      message: `Antigravity API credentials are set for model "${model}".`,
+      message: "Antigravity API credentials are set.",
       detail: "Detected in environment variables.",
     };
   }
@@ -154,7 +154,7 @@ function checkApiCredentials(
   return {
     code: "antigravity_api_key_missing",
     level: "info",
-    message: `No explicit ANTIGRAVITY_API_KEY detected for model "${model}". The CLI may use the system keyring.`,
+    message: "No explicit ANTIGRAVITY_API_KEY detected. The CLI may use the system keyring.",
     hint: "If the probe fails, check your API key or run `agy install` via CLI.",
   };
 }
@@ -278,7 +278,7 @@ async function performHelloTelemetryProbe(
       code: hasHello ? "antigravity_hello_probe_passed" : "antigravity_hello_probe_unexpected_output",
       level: hasHello ? "info" : "warn",
       message: hasHello
-        ? `Antigravity hello probe succeeded (model: "${model}", args: "${args.join(" ")}").`
+        ? "Antigravity hello probe succeeded."
         : "Antigravity probe ran but did not return `hello` or `olá` as expected.",
       ...(summary ? { detail: summary.slice(0, 240) } : {}),
     });

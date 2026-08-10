@@ -133,7 +133,7 @@ describe("antigravity local execution", () => {
 
     const modelIdx = cliArgs.indexOf("--model");
     expect(modelIdx).toBeGreaterThan(-1);
-    expect(cliArgs[modelIdx + 1]).toBe("claude-sonnet-4.6-thinking");
+    expect(cliArgs[modelIdx + 1]).toBe("Claude Sonnet 4.6 (Thinking)");
     expect(options.env.ANTIGRAVITY_MODEL).toBe("claude-sonnet-4.6-thinking");
   });
 

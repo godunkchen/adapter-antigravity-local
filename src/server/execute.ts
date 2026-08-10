@@ -306,12 +306,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const workspaces = Array.isArray(context.paperclipWorkspaces) ? context.paperclipWorkspaces : [];
     const args = compileAgyArguments(prompt, resumeSessionId, workspaces, sandbox, extraArgs, model);
     
+    await onLog("stdout", `[antigravity] Executing agy CLI (model: "${model}", session: ${resumeSessionId ?? "new"})\n`);
+
     if (onMeta) {
       await onMeta({
         adapterType: "antigravity_local",
         command: resolvedCommand,
         cwd: effectiveExecutionCwd,
-        commandNotes: ["Running Antigravity CLI in headless print mode"],
+        commandNotes: [
+          "Running Antigravity CLI in headless print mode",
+          `Effective model: "${model}"`,
+        ],
         commandArgs: args.map((val, idx) => (idx === 1 ? `<prompt ${prompt.length} chars>` : val)),
         env: loggedEnv,
         prompt,

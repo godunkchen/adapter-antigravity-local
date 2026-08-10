@@ -136,6 +136,7 @@ function resolveExecutionEnvironment(config: Record<string, unknown>): Record<st
 function checkApiCredentials(
   env: Record<string, string>,
   targetIsRemote: boolean,
+  model: string,
 ): AdapterEnvironmentCheck {
   const configApiKey = env.ANTIGRAVITY_API_KEY;
   const hostApiKey = targetIsRemote ? undefined : process.env.ANTIGRAVITY_API_KEY;
@@ -144,7 +145,7 @@ function checkApiCredentials(
     return {
       code: "antigravity_api_key_present",
       level: "info",
-      message: "Antigravity API credentials are set.",
+      message: `Antigravity API credentials are set for model "${model}".`,
       detail: "Detected in environment variables.",
     };
   }
@@ -152,7 +153,7 @@ function checkApiCredentials(
   return {
     code: "antigravity_api_key_missing",
     level: "info",
-    message: "No explicit ANTIGRAVITY_API_KEY detected. The CLI may use the system keyring.",
+    message: `No explicit ANTIGRAVITY_API_KEY detected for model "${model}". The CLI may use the system keyring.`,
     hint: "If the probe fails, check your API key or run `agy install` via CLI.",
   };
 }
@@ -353,11 +354,11 @@ export async function testEnvironment(
   }
 
   // Step 5: Check configured API keys and authentication contexts
-  const credsCheck = checkApiCredentials(env, targetIsRemote);
+  const selectedModel = asString(config.model, DEFAULT_ANTIGRAVITY_LOCAL_MODEL).trim();
+  const credsCheck = checkApiCredentials(env, targetIsRemote, selectedModel);
   checks.push(credsCheck);
 
   // Step 6: Report configured model selection diagnostic check
-  const selectedModel = asString(config.model, DEFAULT_ANTIGRAVITY_LOCAL_MODEL).trim();
   console.log(`[antigravity] testEnvironment() called: model="${selectedModel}", command="${command}"`);
   checks.push({
     code: "antigravity_model_configured",

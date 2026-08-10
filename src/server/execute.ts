@@ -287,10 +287,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     asString(config.modelReasoningEffort, "") ||
     asString(config.reasoningEffort, "")
   ).trim();
-  const timeoutSec = asNumber(config.timeoutSec, 0) || asNumber(config.timeout, 0);
+  const configuredTimeoutSec = asNumber(config.timeoutSec, 0) || asNumber(config.timeout, 0);
   const sandbox = asBoolean(config.sandbox, false);
 
-  console.log(`[antigravity] execute() called: runId="${runId}", command="${command}", model="${model}", effort="${rawEffort}", timeoutSec=${timeoutSec}, sandbox=${sandbox}`);
+  console.log(`[antigravity] execute() called: runId="${runId}", command="${command}", model="${model}", effort="${rawEffort}", timeoutSec=${configuredTimeoutSec}, sandbox=${sandbox}`);
 
   const workspaceContext = parseObject(context.paperclipWorkspace);
   const { cwd, effectiveWorkspaceCwd } = await resolveEffectiveCwd(config, workspaceContext);
@@ -323,12 +323,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     ),
   );
 
-  const timeoutSec = resolveAdapterExecutionTargetTimeoutSec(executionTarget, asNumber(config.timeoutSec, 0));
+  const processTimeoutSec = resolveAdapterExecutionTargetTimeoutSec(executionTarget, configuredTimeoutSec);
   const graceSec = asNumber(config.graceSec, 20);
 
   await ensureAdapterExecutionTargetCommandResolvable(command, executionTarget, cwd, runtimeEnv, {
     installCommand: SANDBOX_INSTALL_COMMAND,
-    timeoutSec,
+    timeoutSec: processTimeoutSec,
   });
 
   const resolvedCommand = await resolveAdapterExecutionTargetCommandForLogs(command, executionTarget, cwd, runtimeEnv);
@@ -398,7 +398,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const runAttempt = async (resumeSessionId: string | null) => {
     const workspaces = Array.isArray(context.paperclipWorkspaces) ? context.paperclipWorkspaces : [];
-    const args = compileAgyArguments(prompt, resumeSessionId, workspaces, sandbox, extraArgs, model, rawEffort, timeoutSec);
+    const args = compileAgyArguments(prompt, resumeSessionId, workspaces, sandbox, extraArgs, model, rawEffort, configuredTimeoutSec);
     
     console.log(`[antigravity] Executing agy CLI: ${command} ${args.join(" ")}`);
     await onLog("stdout", `[antigravity] Executing agy CLI (model: "${model}", session: ${resumeSessionId ?? "new"})\n`);

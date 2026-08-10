@@ -197,7 +197,11 @@ async function performHelloTelemetryProbe(
     return asStringArray(config.args);
   })();
 
+  const model = asString(config.model, DEFAULT_ANTIGRAVITY_LOCAL_MODEL).trim();
   const args = ["--print", "Respond with hello."];
+  if (model && model !== DEFAULT_ANTIGRAVITY_LOCAL_MODEL) {
+    args.push("--model", model);
+  }
   args.push("--dangerously-skip-permissions");
   if (sandbox) {
     args.push("--sandbox");
@@ -350,7 +354,18 @@ export async function testEnvironment(
   const credsCheck = checkApiCredentials(env, targetIsRemote);
   checks.push(credsCheck);
 
-  // Step 6: Spawn live "hello" telemetry probe if directories and executables resolved correctly
+  // Step 6: Report configured model selection diagnostic check
+  const selectedModel = asString(config.model, DEFAULT_ANTIGRAVITY_LOCAL_MODEL).trim();
+  checks.push({
+    code: "antigravity_model_configured",
+    level: "info",
+    message: `Configured execution model: "${selectedModel}"`,
+    detail: selectedModel === DEFAULT_ANTIGRAVITY_LOCAL_MODEL
+      ? "Auto (Uses agy internal auto-routing default)"
+      : `Pinned model: ${selectedModel}`,
+  });
+
+  // Step 7: Spawn live "hello" telemetry probe if directories and executables resolved correctly
   const canRunProbe = cwdCheck.code === "antigravity_cwd_valid" && commandResolvable;
   if (canRunProbe) {
     await performHelloTelemetryProbe(runId, target, command, cwd, env, config, checks);

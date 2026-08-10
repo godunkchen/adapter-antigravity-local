@@ -38,6 +38,11 @@ import {
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
 } from "@paperclipai/adapter-utils/server-utils";
 import { DEFAULT_ANTIGRAVITY_LOCAL_MODEL, SANDBOX_INSTALL_COMMAND } from "../index.js";
+import {
+  extractAntigravityExecutionMetrics,
+  extractAntigravitySessionId,
+  isAntigravityUnknownSessionError,
+} from "./parse.js";
 import { firstNonEmptyLine } from "../utils.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
@@ -128,23 +133,113 @@ function compileAgentPrompt(
 
 /**
  * Generates the clean CLI argument list for spawning the `agy` process.
- * Maps session IDs, prompts, and active workspaces to repeatable arguments.
+ * Maps session IDs, prompts, models, and active workspaces to repeatable arguments.
  * 
  * @param prompt - The compiled orchestrator prompt payload.
  * @param resumeSessionId - Optional session ID to resume (resets turn contexts).
  * @param workspaces - Active Paperclip workspace mappings to register.
  * @param sandbox - Indicates whether OS and terminal sandboxing is enabled.
  * @param extraArgs - Structured list of user-defined CLI arguments to append.
+ * @param model - Optional model selection identifier.
  * @returns An array representing the formatted CLI arguments list.
  */
+export interface AgyModelResolution {
+  model?: string;
+  effort?: string;
+}
+
+/**
+ * Resolves Paperclip model selections to exact agy CLI model flags and reasoning effort settings.
+ *
+ * Rules:
+ * 1. Claude models map to exact agy CLI identifiers and DO NOT accept --effort.
+ * 2. Gemini & GPT models accept exact model IDs and REQUIRE --effort (low | medium | high).
+ * 3. "auto" returns empty object to allow agy native auto-routing defaults.
+ */
+export function resolveAgyModelAndEffort(rawModel?: string, rawEffort?: string): AgyModelResolution {
+  const modelStr = (rawModel || "").trim();
+  const normalizedEffortInput = (rawEffort || "").trim().toLowerCase();
+
+  const userEffort =
+    normalizedEffortInput === "low" || normalizedEffortInput === "minimal"
+      ? "low"
+      : normalizedEffortInput === "high" || normalizedEffortInput === "max"
+        ? "high"
+        : normalizedEffortInput === "medium"
+          ? "medium"
+          : undefined;
+
+  if (!modelStr || modelStr.toLowerCase() === "auto") {
+    return userEffort ? { effort: userEffort } : {};
+  }
+
+  const lower = modelStr.toLowerCase();
+
+  // 1. Claude models -> exact agy CLI model identifier (DO NOT accept --effort)
+  if (lower.includes("sonnet") || lower === "smart") {
+    return { model: "Claude Sonnet 4.6 (Thinking)" };
+  }
+  if (lower.includes("opus")) {
+    return { model: "Claude Opus 4.6 (Thinking)" };
+  }
+
+  // 2. Gemini 3.5 Flash -> cheap / fast / flash (REQUIRES --effort)
+  if (lower === "cheap" || lower === "fast" || lower.includes("gemini-3.5-flash")) {
+    return {
+      model: "gemini-3.5-flash",
+      effort: userEffort || "medium",
+    };
+  }
+
+  // 3. Gemini 3.6 Flash
+  if (lower.includes("gemini-3.6-flash")) {
+    return {
+      model: "gemini-3.6-flash",
+      effort: userEffort || "high",
+    };
+  }
+
+  // 4. Gemini 3.1 Pro
+  if (lower.includes("gemini-3.1-pro")) {
+    return {
+      model: "gemini-3.1-pro",
+      effort: userEffort || "high",
+    };
+  }
+
+  // 5. GPT-OSS 120B
+  if (lower.includes("gpt-oss-120b")) {
+    return {
+      model: "gpt-oss-120b",
+      effort: userEffort || "medium",
+    };
+  }
+
+  // Fallback: Custom model string passed by user
+  return { model: modelStr, ...(userEffort ? { effort: userEffort } : {}) };
+}
+
 function compileAgyArguments(
   prompt: string,
   resumeSessionId: string | null,
   workspaces: unknown[],
   sandbox: boolean,
-  extraArgs: string[]
+  extraArgs: string[],
+  model?: string,
+  effort?: string,
+  timeoutSec?: number,
 ): string[] {
-  const args = ["--print", prompt];
+  const args = ["--print", prompt, "--output-format", "stream-json"];
+  const resolved = resolveAgyModelAndEffort(model, effort);
+  if (resolved.model) {
+    args.push("--model", resolved.model);
+  }
+  if (resolved.effort) {
+    args.push("--effort", resolved.effort);
+  }
+  if (timeoutSec && timeoutSec > 0) {
+    args.push("--print-timeout", `${timeoutSec}s`);
+  }
   if (resumeSessionId) {
     args.push("--conversation", resumeSessionId);
   }
@@ -186,7 +281,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const promptTemplate = asString(config.promptTemplate, DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE);
   const command = asString(config.command, "agy");
   const model = asString(config.model, DEFAULT_ANTIGRAVITY_LOCAL_MODEL).trim();
+  const rawEffort = (
+    asString(config.thinkingEffort, "") ||
+    asString(config.effort, "") ||
+    asString(config.modelReasoningEffort, "") ||
+    asString(config.reasoningEffort, "")
+  ).trim();
+  const configuredTimeoutSec = asNumber(config.timeoutSec, 0) || asNumber(config.timeout, 0);
   const sandbox = asBoolean(config.sandbox, false);
+
+  console.log(`[antigravity] execute() called: runId="${runId}", command="${command}", model="${model}", effort="${rawEffort}", timeoutSec=${configuredTimeoutSec}, sandbox=${sandbox}`);
 
   const workspaceContext = parseObject(context.paperclipWorkspace);
   const { cwd, effectiveWorkspaceCwd } = await resolveEffectiveCwd(config, workspaceContext);
@@ -219,12 +323,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     ),
   );
 
-  const timeoutSec = resolveAdapterExecutionTargetTimeoutSec(executionTarget, asNumber(config.timeoutSec, 0));
+  const processTimeoutSec = resolveAdapterExecutionTargetTimeoutSec(executionTarget, configuredTimeoutSec);
   const graceSec = asNumber(config.graceSec, 20);
 
   await ensureAdapterExecutionTargetCommandResolvable(command, executionTarget, cwd, runtimeEnv, {
     installCommand: SANDBOX_INSTALL_COMMAND,
-    timeoutSec,
+    timeoutSec: processTimeoutSec,
   });
 
   const resolvedCommand = await resolveAdapterExecutionTargetCommandForLogs(command, executionTarget, cwd, runtimeEnv);
@@ -251,7 +355,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         runId,
         target: executionTarget,
         adapterKey: "antigravity",
-        timeoutSec,
+        timeoutSec: processTimeoutSec,
         workspaceLocalDir: cwd,
         installCommand: SANDBOX_INSTALL_COMMAND,
         detectCommand: command,
@@ -273,7 +377,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       target: runtimeExecutionTarget,
       runtimeRootDir: preparedExecutionTargetRuntime?.runtimeRootDir ?? null,
       adapterKey: "antigravity",
-      timeoutSec,
+      timeoutSec: processTimeoutSec,
       hostApiToken: env.PAPERCLIP_API_KEY,
       onLog,
     });
@@ -294,14 +398,20 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const runAttempt = async (resumeSessionId: string | null) => {
     const workspaces = Array.isArray(context.paperclipWorkspaces) ? context.paperclipWorkspaces : [];
-    const args = compileAgyArguments(prompt, resumeSessionId, workspaces, sandbox, extraArgs);
+    const args = compileAgyArguments(prompt, resumeSessionId, workspaces, sandbox, extraArgs, model, rawEffort, configuredTimeoutSec);
     
+    console.log(`[antigravity] Executing agy CLI: ${command} ${args.join(" ")}`);
+    await onLog("stdout", `[antigravity] Executing agy CLI (model: "${model}", session: ${resumeSessionId ?? "new"})\n`);
+
     if (onMeta) {
       await onMeta({
         adapterType: "antigravity_local",
         command: resolvedCommand,
         cwd: effectiveExecutionCwd,
-        commandNotes: ["Running Antigravity CLI in headless print mode"],
+        commandNotes: [
+          "Running Antigravity CLI in headless print mode",
+          `Effective model: "${model}"`,
+        ],
         commandArgs: args.map((val, idx) => (idx === 1 ? `<prompt ${prompt.length} chars>` : val)),
         env: loggedEnv,
         prompt,
@@ -313,7 +423,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     return await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
       cwd,
       env,
-      timeoutSec,
+      timeoutSec: processTimeoutSec,
       graceSec,
       onSpawn,
       onLog,
@@ -328,7 +438,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         exitCode: proc.exitCode,
         signal: proc.signal,
         timedOut: true,
-        errorMessage: `Timed out after ${timeoutSec}s`,
+        errorMessage: `Timed out after ${processTimeoutSec}s`,
         errorCode: null,
         clearSession: false,
       };
@@ -337,11 +447,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const failed = (proc.exitCode ?? 0) !== 0;
     const rawStdout = proc.stdout.trim();
     const rawStderr = proc.stderr.trim();
+    const unknownSession = failed && isAntigravityUnknownSessionError(rawStdout, rawStderr);
     const fallbackErrorMessage = firstNonEmptyLine(rawStderr) || `Antigravity exited with code ${proc.exitCode ?? -1}`;
 
-    const resolvedSessionParams = sessionId
+    const extractedSessionId = extractAntigravitySessionId(rawStdout, rawStderr);
+    const finalSessionId = sessionId || extractedSessionId;
+
+    const metrics = extractAntigravityExecutionMetrics(rawStdout, rawStderr);
+    const summaryText = metrics.response ?? rawStdout;
+
+    const resolvedSessionParams = finalSessionId
       ? {
-          sessionId,
+          sessionId: finalSessionId,
           cwd: effectiveExecutionCwd,
           ...(asString(workspaceContext.workspaceId, "") ? { workspaceId: workspaceContext.workspaceId } : {}),
           ...(executionTargetIsRemote ? { remoteExecution: adapterExecutionTargetSessionIdentity(runtimeExecutionTarget) } : {}),
@@ -354,19 +471,19 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       timedOut: false,
       errorMessage: failed ? fallbackErrorMessage : null,
       errorCode: null,
-      usage: { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0 },
-      sessionId: sessionId || null,
+      usage: metrics.usage,
+      sessionId: finalSessionId || null,
       sessionParams: resolvedSessionParams,
-      sessionDisplayId: sessionId || null,
+      sessionDisplayId: finalSessionId || null,
       provider: "google",
       biller: "google",
       model,
       billingType: "api",
-      costUsd: null,
+      costUsd: metrics.costUsd,
       resultJson: { raw: rawStdout },
-      summary: failed ? "" : rawStdout,
+      summary: failed ? "" : summaryText,
       question: null,
-      clearSession: false,
+      clearSession: unknownSession,
     };
   } finally {
     await Promise.all([

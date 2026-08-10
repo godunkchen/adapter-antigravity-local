@@ -33,6 +33,7 @@ import {
 import { DEFAULT_ANTIGRAVITY_LOCAL_MODEL, SANDBOX_INSTALL_COMMAND } from "../index.js";
 import { detectAntigravityAuthRequired, detectAntigravityQuotaExhausted } from "./parse.js";
 import { firstNonEmptyLine, commandLooksLike, isNonEmptyString } from "../utils.js";
+import { resolveAgyModelAndEffort } from "./execute.js";
 
 /**
  * Summarizes the combined status from a list of environmental diagnostic checks.
@@ -136,6 +137,7 @@ function resolveExecutionEnvironment(config: Record<string, unknown>): Record<st
 function checkApiCredentials(
   env: Record<string, string>,
   targetIsRemote: boolean,
+  model: string,
 ): AdapterEnvironmentCheck {
   const configApiKey = env.ANTIGRAVITY_API_KEY;
   const hostApiKey = targetIsRemote ? undefined : process.env.ANTIGRAVITY_API_KEY;
@@ -197,7 +199,26 @@ async function performHelloTelemetryProbe(
     return asStringArray(config.args);
   })();
 
+  const model = asString(config.model, DEFAULT_ANTIGRAVITY_LOCAL_MODEL).trim();
+  const rawEffort = (
+    asString(config.thinkingEffort, "") ||
+    asString(config.effort, "") ||
+    asString(config.modelReasoningEffort, "") ||
+    asString(config.reasoningEffort, "")
+  ).trim();
+  const timeoutSecConfig = asNumber(config.timeoutSec, 0) || asNumber(config.timeout, 0);
+  const resolved = resolveAgyModelAndEffort(model, rawEffort);
+
   const args = ["--print", "Respond with hello."];
+  if (resolved.model) {
+    args.push("--model", resolved.model);
+  }
+  if (resolved.effort) {
+    args.push("--effort", resolved.effort);
+  }
+  if (timeoutSecConfig > 0) {
+    args.push("--print-timeout", `${timeoutSecConfig}s`);
+  }
   args.push("--dangerously-skip-permissions");
   if (sandbox) {
     args.push("--sandbox");
@@ -205,6 +226,8 @@ async function performHelloTelemetryProbe(
   if (extraArgs.length > 0) {
     args.push(...extraArgs);
   }
+
+  console.log(`[antigravity] Telemetry probe executing agy CLI: ${command} ${args.join(" ")}`);
 
   const probe = await runAdapterExecutionTargetProcess(
     runId,
@@ -347,10 +370,29 @@ export async function testEnvironment(
   }
 
   // Step 5: Check configured API keys and authentication contexts
-  const credsCheck = checkApiCredentials(env, targetIsRemote);
+  const selectedModel = asString(config.model, DEFAULT_ANTIGRAVITY_LOCAL_MODEL).trim();
+  const selectedEffort = (
+    asString(config.thinkingEffort, "") ||
+    asString(config.effort, "") ||
+    asString(config.modelReasoningEffort, "") ||
+    asString(config.reasoningEffort, "")
+  ).trim();
+  const selectedTimeout = asNumber(config.timeoutSec, 0) || asNumber(config.timeout, 0);
+  const credsCheck = checkApiCredentials(env, targetIsRemote, selectedModel);
   checks.push(credsCheck);
 
-  // Step 6: Spawn live "hello" telemetry probe if directories and executables resolved correctly
+  // Step 6: Report configured model selection diagnostic check
+  console.log(`[antigravity] testEnvironment() called: model="${selectedModel}", effort="${selectedEffort}", timeoutSec=${selectedTimeout}, command="${command}"`);
+  checks.push({
+    code: "antigravity_model_configured",
+    level: "info",
+    message: `Configured execution model: "${selectedModel}"`,
+    detail: selectedModel === DEFAULT_ANTIGRAVITY_LOCAL_MODEL
+      ? "Auto (Uses agy internal auto-routing default)"
+      : `Pinned model: ${selectedModel}`,
+  });
+
+  // Step 7: Spawn live "hello" telemetry probe if directories and executables resolved correctly
   const canRunProbe = cwdCheck.code === "antigravity_cwd_valid" && commandResolvable;
   if (canRunProbe) {
     await performHelloTelemetryProbe(runId, target, command, cwd, env, config, checks);

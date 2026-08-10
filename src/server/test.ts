@@ -210,6 +210,8 @@ async function performHelloTelemetryProbe(
     args.push(...extraArgs);
   }
 
+  console.log(`[antigravity] Telemetry probe executing agy CLI: ${command} ${args.join(" ")}`);
+
   const probe = await runAdapterExecutionTargetProcess(
     runId,
     target,
@@ -259,7 +261,7 @@ async function performHelloTelemetryProbe(
       code: hasHello ? "antigravity_hello_probe_passed" : "antigravity_hello_probe_unexpected_output",
       level: hasHello ? "info" : "warn",
       message: hasHello
-        ? "Antigravity hello probe succeeded."
+        ? `Antigravity hello probe succeeded (model: "${model}", args: "${args.join(" ")}").`
         : "Antigravity probe ran but did not return `hello` or `olá` as expected.",
       ...(summary ? { detail: summary.slice(0, 240) } : {}),
     });
@@ -356,6 +358,7 @@ export async function testEnvironment(
 
   // Step 6: Report configured model selection diagnostic check
   const selectedModel = asString(config.model, DEFAULT_ANTIGRAVITY_LOCAL_MODEL).trim();
+  console.log(`[antigravity] testEnvironment() called: model="${selectedModel}", command="${command}"`);
   checks.push({
     code: "antigravity_model_configured",
     level: "info",

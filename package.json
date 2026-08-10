@@ -4,7 +4,7 @@
   "license": "MIT",
   "homepage": "https://github.com/weslleycapelari/adapter-antigravity-local",
   "scripts": {
-    "build": "tsc && cp package.json dist/",
+    "build": "tsc && npx esbuild src/index.ts --bundle --platform=node --format=esm --outfile=dist/index.js --external:@paperclipai/adapter-utils --external:picocolors --external:node:* && cp package.json dist/",
     "clean": "rm -rf dist",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"

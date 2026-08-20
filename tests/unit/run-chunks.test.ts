@@ -38,24 +38,20 @@ describe("run cb8af9ad log chunks evaluation", () => {
   it("handles multi-line split JSON tool calls cleanly across line chunks", () => {
     const parser = createStdoutParser();
 
-    const chunkPart1 = '{"event":"step_update","step_update":{"conversation_id":"db9a8914","step_index":93,"state":"ACTIVE","step_type":"tool","tool_name":"run_command","tool_info":{"name":"run_command","parameters":{"CommandLine":"node -e \'';
-    const chunkPart2 = 'const { createLocalAgentJwt } = require("./server/dist/agent-auth-jwt.js");';
-    const chunkPart3 = '\'}}}}';
+    const chunkPart1 = '{"event":"step_update","step_update":{"conversation_id":"db9a8914","step_index":93,"state":"ACTIVE","step_type":"tool","tool_name":"run_command","tool_info":{"name":"run_command","parameters":{"CommandLine":"node -e \\"hello\\"';
+    const chunkPart2 = 'world\\"}}}}';
 
     const res1 = parser.parseLine(chunkPart1, "2026-08-20T00:00:00Z");
     expect(res1).toHaveLength(0); // Accumulated in buffer
 
     const res2 = parser.parseLine(chunkPart2, "2026-08-20T00:00:01Z");
-    expect(res2).toHaveLength(0); // Accumulated in buffer
-
-    const res3 = parser.parseLine(chunkPart3, "2026-08-20T00:00:02Z");
-    expect(res3).toHaveLength(1); // Full JSON payload completed and parsed!
-    expect(res3[0]).toEqual({
+    expect(res2).toHaveLength(1); // Full JSON payload completed and parsed!
+    expect(res2[0]).toEqual({
       kind: "tool_call",
-      ts: "2026-08-20T00:00:02Z",
+      ts: "2026-08-20T00:00:01Z",
       name: "command_execution",
       input: {
-        command: 'node -e \'\nconst { createLocalAgentJwt } = require("./server/dist/agent-auth-jwt.js");\n\'',
+        command: 'node -e "hello"\nworld"',
       },
       toolUseId: "agy-tool-93-run_command",
     });

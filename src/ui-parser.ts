@@ -380,7 +380,17 @@ export function createStdoutParser() {
           return processEventObject(eventObj, ts);
         }
       } catch {
-        // Multi-line JSON incomplete, save candidate to buffer and wait for next line
+        // Try sanitizing unescaped newlines in JSON strings
+        try {
+          const sanitized = candidateTrimmed.replace(/[\r\n]+/g, "\\n");
+          const eventObj = safeRecord(JSON.parse(sanitized));
+          if (eventObj && typeof eventObj.event === "string") {
+            jsonBuffer = "";
+            return processEventObject(eventObj, ts);
+          }
+        } catch {
+          // Still incomplete payload
+        }
         jsonBuffer = candidate;
         return [];
       }

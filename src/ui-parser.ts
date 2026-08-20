@@ -200,174 +200,196 @@ function formatUsageSummary(usage: Record<string, unknown>): string | null {
  */
 export function createStdoutParser() {
   const activeTools = new Map<string, { name: string; toolUseId: string; parameters: Record<string, unknown> }>();
+  let jsonBuffer = "";
   let toolCounter = 0;
   let lastReportedTotalTokens = 0;
 
+  function processEventObject(eventObj: Record<string, unknown>, ts: string): TranscriptEntry[] {
+    const eventType = eventObj.event;
+
+    // 1. Session Init Event -> emit INIT kind
+    if (eventType === "init") {
+      const convId = typeof eventObj.conversation_id === "string" ? eventObj.conversation_id : (safeRecord(eventObj.init)?.conversation_id as string) || "";
+      const modelName = (safeRecord(eventObj.init)?.model as string) || "gemini-3.6-flash";
+      return [
+        {
+          kind: "init",
+          ts,
+          model: modelName,
+          sessionId: convId,
+        },
+      ];
+    }
+
+    // 2. Step Update Event
+    if (eventType === "step_update" && eventObj.step_update) {
+      const update = safeRecord(eventObj.step_update);
+      if (!update) return [];
+
+      const stepType = typeof update.step_type === "string" ? update.step_type : "";
+      const state = typeof update.state === "string" ? update.state : "";
+      const entries: TranscriptEntry[] = [];
+
+      // Extract usage metrics if present -> emit SYSTEM kind
+      const usageObj = safeRecord(update.usage);
+      if (usageObj) {
+        const currentTotal = typeof usageObj.total_tokens === "number" ? usageObj.total_tokens : 0;
+        if (currentTotal > 0 && currentTotal !== lastReportedTotalTokens) {
+          lastReportedTotalTokens = currentTotal;
+          const usageText = formatUsageSummary(usageObj);
+          if (usageText) {
+            entries.push({ kind: "system", ts, text: usageText });
+          }
+        }
+      }
+
+      // Tool Execution Step
+      if (stepType === "tool") {
+        const toolInfoObj = safeRecord(update.tool_info);
+        const toolName = (typeof update.tool_name === "string" ? update.tool_name : typeof toolInfoObj?.name === "string" ? toolInfoObj.name : "tool").trim();
+        const stepIndex = typeof update.step_index === "number" ? update.step_index : ++toolCounter;
+        const toolUseId = `agy-tool-${stepIndex}-${toolName}`;
+        const rawParameters = safeRecord(toolInfoObj?.parameters) || safeRecord(update.parameters) || {};
+        const { name: displayName, input: formattedInput } = resolveToolCallDisplay(toolName, rawParameters);
+
+        if (state === "ACTIVE") {
+          activeTools.set(toolUseId, { name: displayName, toolUseId, parameters: rawParameters });
+          entries.push({
+            kind: "tool_call",
+            ts,
+            name: displayName,
+            input: formattedInput,
+            toolUseId,
+          });
+          return entries;
+        }
+
+        if (state === "DONE") {
+          const isError = update.is_error === true || update.state === "ERROR";
+          const durationNum = typeof update.duration_seconds === "number" ? update.duration_seconds : 0;
+          const durationStr = durationNum > 0 ? `${durationNum.toFixed(2)}s` : "";
+
+          const rawOutput = toolInfoObj?.output ?? update.output ?? update.result;
+          const contentStr = formatToolOutputContent(rawOutput, rawParameters, durationStr, isError);
+
+          if (!activeTools.has(toolUseId)) {
+            entries.push({
+              kind: "tool_call",
+              ts,
+              name: displayName,
+              input: formattedInput,
+              toolUseId,
+            });
+          }
+          activeTools.delete(toolUseId);
+
+          entries.push({
+            kind: "tool_result",
+            ts,
+            toolUseId,
+            content: contentStr,
+            isError,
+          });
+          return entries;
+        }
+      }
+
+      // Agent Response Step
+      if (stepType === "agent_response") {
+        if (typeof update.text_delta === "string" && update.text_delta.length > 0) {
+          entries.push({
+            kind: "assistant",
+            ts,
+            text: update.text_delta,
+            delta: true,
+          });
+        } else if (typeof update.text === "string" && update.text.length > 0) {
+          entries.push({
+            kind: "assistant",
+            ts,
+            text: update.text,
+          });
+        }
+
+        if (typeof update.thinking === "string" && update.thinking.length > 0) {
+          entries.push({
+            kind: "thinking",
+            ts,
+            text: update.thinking,
+          });
+        }
+        return entries;
+      }
+
+      // Internal Checkpoint / User input
+      if (stepType === "checkpoint" || stepType === "user_input") {
+        return entries;
+      }
+
+      return entries;
+    }
+
+    // 3. Final Result Event
+    if (eventType === "result" && eventObj.result) {
+      const res = safeRecord(eventObj.result);
+      if (res) {
+        const entries: TranscriptEntry[] = [];
+        const usageObj = safeRecord(res.usage);
+        if (usageObj) {
+          const usageText = formatUsageSummary(usageObj);
+          if (usageText) {
+            entries.push({ kind: "system", ts, text: usageText });
+          }
+        }
+
+        if (typeof res.response === "string" && res.response.trim().length > 0) {
+          entries.push({
+            kind: "assistant",
+            ts,
+            text: res.response,
+          });
+        }
+        return entries;
+      }
+    }
+
+    return [];
+  }
+
   function parseLine(line: string, ts: string): TranscriptEntry[] {
     const trimmed = line.trim();
-    if (!trimmed) return [];
+    if (!trimmed && !jsonBuffer) return [];
 
     // System log prefixes
     if (trimmed.startsWith("[antigravity]") || trimmed.startsWith("[paperclip]")) {
+      if (jsonBuffer) {
+        jsonBuffer = "";
+      }
       return [{ kind: "system", ts, text: trimmed }];
     }
 
-    // Parse agy stream-json event line
-    if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+    // Accumulate multi-line JSON chunks if jsonBuffer is active or line starts with {
+    const candidate = jsonBuffer ? `${jsonBuffer}\n${line}` : line;
+    const candidateTrimmed = candidate.trim();
+
+    if (candidateTrimmed.startsWith("{")) {
       try {
-        const eventObj = safeRecord(JSON.parse(trimmed));
-        if (eventObj) {
-          const eventType = eventObj.event;
-
-          // 1. Session Init Event -> emit INIT kind
-          if (eventType === "init") {
-            const convId = typeof eventObj.conversation_id === "string" ? eventObj.conversation_id : (safeRecord(eventObj.init)?.conversation_id as string) || "";
-            const modelName = (safeRecord(eventObj.init)?.model as string) || "gemini-3.6-flash";
-            return [
-              {
-                kind: "init",
-                ts,
-                model: modelName,
-                sessionId: convId,
-              },
-            ];
-          }
-
-          // 2. Step Update Event
-          if (eventType === "step_update" && eventObj.step_update) {
-            const update = safeRecord(eventObj.step_update);
-            if (!update) return [];
-
-            const stepType = typeof update.step_type === "string" ? update.step_type : "";
-            const state = typeof update.state === "string" ? update.state : "";
-            const entries: TranscriptEntry[] = [];
-
-            // Extract usage metrics if present -> emit SYSTEM kind
-            const usageObj = safeRecord(update.usage);
-            if (usageObj) {
-              const currentTotal = typeof usageObj.total_tokens === "number" ? usageObj.total_tokens : 0;
-              if (currentTotal > 0 && currentTotal !== lastReportedTotalTokens) {
-                lastReportedTotalTokens = currentTotal;
-                const usageText = formatUsageSummary(usageObj);
-                if (usageText) {
-                  entries.push({ kind: "system", ts, text: usageText });
-                }
-              }
-            }
-
-            // Tool Execution Step
-            if (stepType === "tool") {
-              const toolInfoObj = safeRecord(update.tool_info);
-              const toolName = (typeof update.tool_name === "string" ? update.tool_name : typeof toolInfoObj?.name === "string" ? toolInfoObj.name : "tool").trim();
-              const stepIndex = typeof update.step_index === "number" ? update.step_index : ++toolCounter;
-              const toolUseId = `agy-tool-${stepIndex}-${toolName}`;
-              const rawParameters = safeRecord(toolInfoObj?.parameters) || safeRecord(update.parameters) || {};
-              const { name: displayName, input: formattedInput } = resolveToolCallDisplay(toolName, rawParameters);
-
-              if (state === "ACTIVE") {
-                activeTools.set(toolUseId, { name: displayName, toolUseId, parameters: rawParameters });
-                entries.push({
-                  kind: "tool_call",
-                  ts,
-                  name: displayName,
-                  input: formattedInput,
-                  toolUseId,
-                });
-                return entries;
-              }
-
-              if (state === "DONE") {
-                const isError = update.is_error === true || update.state === "ERROR";
-                const durationNum = typeof update.duration_seconds === "number" ? update.duration_seconds : 0;
-                const durationStr = durationNum > 0 ? `${durationNum.toFixed(2)}s` : "";
-
-                const rawOutput = toolInfoObj?.output ?? update.output ?? update.result;
-                const contentStr = formatToolOutputContent(rawOutput, rawParameters, durationStr, isError);
-
-                if (!activeTools.has(toolUseId)) {
-                  entries.push({
-                    kind: "tool_call",
-                    ts,
-                    name: displayName,
-                    input: formattedInput,
-                    toolUseId,
-                  });
-                }
-                activeTools.delete(toolUseId);
-
-                entries.push({
-                  kind: "tool_result",
-                  ts,
-                  toolUseId,
-                  content: contentStr,
-                  isError,
-                });
-                return entries;
-              }
-            }
-
-            // Agent Response Step
-            if (stepType === "agent_response") {
-              if (typeof update.text_delta === "string" && update.text_delta.length > 0) {
-                entries.push({
-                  kind: "assistant",
-                  ts,
-                  text: update.text_delta,
-                  delta: true,
-                });
-              } else if (typeof update.text === "string" && update.text.length > 0) {
-                entries.push({
-                  kind: "assistant",
-                  ts,
-                  text: update.text,
-                });
-              }
-
-              if (typeof update.thinking === "string" && update.thinking.length > 0) {
-                entries.push({
-                  kind: "thinking",
-                  ts,
-                  text: update.thinking,
-                });
-              }
-              return entries;
-            }
-
-            // Internal Checkpoint / User input
-            if (stepType === "checkpoint" || stepType === "user_input") {
-              return entries;
-            }
-
-            return entries;
-          }
-
-          // 3. Final Result Event
-          if (eventType === "result" && eventObj.result) {
-            const res = safeRecord(eventObj.result);
-            if (res) {
-              const entries: TranscriptEntry[] = [];
-              const usageObj = safeRecord(res.usage);
-              if (usageObj) {
-                const usageText = formatUsageSummary(usageObj);
-                if (usageText) {
-                  entries.push({ kind: "system", ts, text: usageText });
-                }
-              }
-
-              if (typeof res.response === "string" && res.response.trim().length > 0) {
-                entries.push({
-                  kind: "assistant",
-                  ts,
-                  text: res.response,
-                });
-              }
-              return entries;
-            }
-          }
+        const eventObj = safeRecord(JSON.parse(candidateTrimmed));
+        if (eventObj && typeof eventObj.event === "string") {
+          jsonBuffer = "";
+          return processEventObject(eventObj, ts);
         }
       } catch {
-        // Fall back to plain text formatting
+        // Multi-line JSON incomplete, save candidate to buffer and wait for next line
+        jsonBuffer = candidate;
+        return [];
       }
+    }
+
+    if (jsonBuffer) {
+      const flushed = jsonBuffer;
+      jsonBuffer = "";
+      return [{ kind: "assistant", ts, text: flushed }];
     }
 
     // Stderr / Errors
@@ -380,6 +402,7 @@ export function createStdoutParser() {
   }
 
   function reset() {
+    jsonBuffer = "";
     activeTools.clear();
     toolCounter = 0;
     lastReportedTotalTokens = 0;

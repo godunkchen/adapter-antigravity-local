@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { describe, it, expect } from "vitest";
+import { createStdoutParser } from "../../src/ui-parser.js";
 
 describe("run cb8af9ad log chunks evaluation", () => {
   it("parses actual NDJSON lines from run cb8af9ad", () => {
@@ -32,5 +33,31 @@ describe("run cb8af9ad log chunks evaluation", () => {
       const entries = resolved.parseStdoutLine(line, "2026-08-20T00:00:00Z");
       expect(entries.length).toBeGreaterThan(0);
     }
+  });
+
+  it("handles multi-line split JSON tool calls cleanly across line chunks", () => {
+    const parser = createStdoutParser();
+
+    const chunkPart1 = '{"event":"step_update","step_update":{"conversation_id":"db9a8914","step_index":93,"state":"ACTIVE","step_type":"tool","tool_name":"run_command","tool_info":{"name":"run_command","parameters":{"CommandLine":"node -e \'';
+    const chunkPart2 = 'const { createLocalAgentJwt } = require("./server/dist/agent-auth-jwt.js");';
+    const chunkPart3 = '\'}}}}';
+
+    const res1 = parser.parseLine(chunkPart1, "2026-08-20T00:00:00Z");
+    expect(res1).toHaveLength(0); // Accumulated in buffer
+
+    const res2 = parser.parseLine(chunkPart2, "2026-08-20T00:00:01Z");
+    expect(res2).toHaveLength(0); // Accumulated in buffer
+
+    const res3 = parser.parseLine(chunkPart3, "2026-08-20T00:00:02Z");
+    expect(res3).toHaveLength(1); // Full JSON payload completed and parsed!
+    expect(res3[0]).toEqual({
+      kind: "tool_call",
+      ts: "2026-08-20T00:00:02Z",
+      name: "command_execution",
+      input: {
+        command: 'node -e \'\nconst { createLocalAgentJwt } = require("./server/dist/agent-auth-jwt.js");\n\'',
+      },
+      toolUseId: "agy-tool-93-run_command",
+    });
   });
 });

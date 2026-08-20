@@ -430,3 +430,11 @@ const defaultModuleParser = createStdoutParser();
 export function parseStdoutLine(line: string, ts: string): TranscriptEntry[] {
   return defaultModuleParser.parseLine(line, ts);
 }
+
+// Guarantee direct CJS exports compatibility without esbuild getter proxy issues
+if (typeof module !== "undefined" && module && module.exports) {
+  module.exports = {
+    parseStdoutLine,
+    createStdoutParser,
+  };
+}

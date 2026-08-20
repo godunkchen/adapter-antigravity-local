@@ -1,10 +1,10 @@
 {
   "name": "@weslleycapelari/adapter-antigravity-local",
-  "version": "1.6.0",
+  "version": "1.7.0",
   "license": "MIT",
   "homepage": "https://github.com/weslleycapelari/adapter-antigravity-local",
   "scripts": {
-    "build": "tsc && npx esbuild src/index.ts --bundle --platform=node --format=esm --outfile=dist/index.js --external:@paperclipai/adapter-utils --external:picocolors --external:node:* && npx esbuild src/ui-parser.ts --bundle --platform=neutral --format=cjs --outfile=dist/ui-parser.js && cp package.json dist/",
+    "build": "tsc && npx esbuild src/index.ts --bundle --platform=node --format=esm --outfile=dist/index.js --external:@paperclipai/adapter-utils --external:picocolors --external:node:* && tsc src/ui-parser.ts --outDir dist --target ES2020 --module CommonJS --declaration false && cp package.json dist/",
     "clean": "rm -rf dist",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"

@@ -38,8 +38,8 @@ describe("run cb8af9ad log chunks evaluation", () => {
   it("handles multi-line split JSON tool calls cleanly across line chunks", () => {
     const parser = createStdoutParser();
 
-    const chunkPart1 = '{"event":"step_update","step_update":{"conversation_id":"db9a8914","step_index":93,"state":"ACTIVE","step_type":"tool","tool_name":"run_command","tool_info":{"name":"run_command","parameters":{"CommandLine":"node -e \\"hello\\"';
-    const chunkPart2 = 'world\\"}}}}';
+    const chunkPart1 = '{"event":"step_update","step_update":{"conversation_id":"db9a8914","step_index":93,"state":"ACTIVE","step_type":"tool","tool_name":"run_command","tool_info":{"name":"run_command","parameters":{"CommandLine":"echo hello';
+    const chunkPart2 = '\\nworld"}}}}';
 
     const res1 = parser.parseLine(chunkPart1, "2026-08-20T00:00:00Z");
     expect(res1).toHaveLength(0); // Accumulated in buffer
@@ -51,7 +51,7 @@ describe("run cb8af9ad log chunks evaluation", () => {
       ts: "2026-08-20T00:00:01Z",
       name: "command_execution",
       input: {
-        command: 'node -e "hello"\nworld"',
+        command: "echo hello\nworld",
       },
       toolUseId: "agy-tool-93-run_command",
     });

@@ -40,19 +40,19 @@ describe("ui-parser", () => {
     });
   });
 
-  it("parses tool call ACTIVE and DONE events into paired tool_call and tool_result entries", () => {
+  it("parses tool call ACTIVE and DONE events with tool_info.output and formatted input", () => {
     const parser = createStdoutParser();
 
     const callLine = JSON.stringify({
       event: "step_update",
       step_update: {
-        step_index: 3,
+        step_index: 21,
         step_type: "tool",
         state: "ACTIVE",
-        tool_name: "write_to_file",
+        tool_name: "grep_search",
         tool_info: {
-          name: "write_to_file",
-          parameters: { TargetFile: "/tmp/foo.txt" },
+          name: "grep_search",
+          parameters: { Query: "PAPERCLIP_API_KEY", SearchPath: "/tmp" },
         },
       },
     });
@@ -62,34 +62,68 @@ describe("ui-parser", () => {
     expect(callEntries[0]).toEqual({
       kind: "tool_call",
       ts: "2026-08-20T00:00:00Z",
-      name: "write_to_file",
-      input: { TargetFile: "/tmp/foo.txt" },
-      toolUseId: "agy-tool-3-write_to_file",
+      name: "grep_search",
+      input: { query: "PAPERCLIP_API_KEY", searchPath: "/tmp" },
+      toolUseId: "agy-tool-21-grep_search",
     });
 
     const doneLine = JSON.stringify({
       event: "step_update",
       step_update: {
-        step_index: 3,
+        step_index: 21,
         step_type: "tool",
         state: "DONE",
-        tool_name: "write_to_file",
-        duration_seconds: 0.12,
+        tool_name: "grep_search",
+        duration_seconds: 8.6279,
         tool_info: {
-          name: "write_to_file",
-          parameters: { TargetFile: "/tmp/foo.txt" },
+          name: "grep_search",
+          parameters: { Query: "PAPERCLIP_API_KEY", SearchPath: "/tmp" },
+          output: "./child-resp.json\n./wake-re.md\n./newissue.py",
         },
       },
     });
 
-    const doneEntries = parser.parseLine(doneLine, "2026-08-20T00:00:01Z");
+    const doneEntries = parser.parseLine(doneLine, "2026-08-20T00:00:08Z");
     expect(doneEntries).toHaveLength(1);
     expect(doneEntries[0]).toEqual({
       kind: "tool_result",
-      ts: "2026-08-20T00:00:01Z",
-      toolUseId: "agy-tool-3-write_to_file",
-      content: '{"TargetFile":"/tmp/foo.txt"}',
+      ts: "2026-08-20T00:00:08Z",
+      toolUseId: "agy-tool-21-grep_search",
+      content: "tool call (completed):  8.63s\n```console\n./child-resp.json\n./wake-re.md\n./newissue.py\n```",
       isError: false,
+    });
+  });
+
+  it("emits token usage system entries when step updates contain usage totals", () => {
+    const parser = createStdoutParser();
+    const line = JSON.stringify({
+      event: "step_update",
+      step_update: {
+        step_index: 2,
+        step_type: "agent_response",
+        text_delta: "Response text",
+        usage: {
+          input_tokens: 13877,
+          output_tokens: 770,
+          thinking_tokens: 689,
+          cache_read_tokens: 12193,
+          total_tokens: 14647,
+        },
+      },
+    });
+
+    const entries = parser.parseLine(line, "2026-08-20T00:00:00Z");
+    expect(entries).toHaveLength(2);
+    expect(entries[0]).toEqual({
+      kind: "system",
+      ts: "2026-08-20T00:00:00Z",
+      text: "[antigravity] Usage updated: 14,647 tokens (in: 13,877, out: 770, thinking: 689, cached: 12,193)",
+    });
+    expect(entries[1]).toEqual({
+      kind: "assistant",
+      ts: "2026-08-20T00:00:00Z",
+      text: "Response text",
+      delta: true,
     });
   });
 

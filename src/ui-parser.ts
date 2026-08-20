@@ -65,12 +65,123 @@ export type TranscriptEntry =
   | TranscriptStderrEntry
   | TranscriptStdoutEntry;
 
+function safeRecord(val: unknown): Record<string, unknown> | null {
+  if (typeof val === "object" && val !== null && !Array.isArray(val)) {
+    return val as Record<string, unknown>;
+  }
+  return null;
+}
+
+/**
+ * Formats tool input parameters into human-readable summary strings.
+ */
+
+function formatToolInput(toolName: string, parameters: Record<string, unknown>): Record<string, unknown> {
+  const name = (toolName || "").toLowerCase();
+  
+  if (name === "run_command" && typeof parameters.CommandLine === "string") {
+    return { command: parameters.CommandLine, ...(parameters.Cwd ? { cwd: parameters.Cwd } : {}) };
+  }
+
+  if (name === "grep_search" && typeof parameters.Query === "string") {
+    return { query: parameters.Query, searchPath: parameters.SearchPath || "." };
+  }
+
+  if (name === "find_by_name" && typeof parameters.Pattern === "string") {
+    return { pattern: parameters.Pattern, directory: parameters.SearchDirectory || "." };
+  }
+
+  if ((name === "view_file" || name === "read_file") && typeof parameters.AbsolutePath === "string") {
+    return { file: parameters.AbsolutePath };
+  }
+
+  if ((name === "write_to_file" || name === "replace_file_content") && typeof parameters.TargetFile === "string") {
+    return { file: parameters.TargetFile, ...(parameters.Instruction ? { instruction: parameters.Instruction } : {}) };
+  }
+
+  return parameters;
+}
+
+/**
+ * Formats tool execution output into clean Markdown code blocks.
+ */
+function formatToolOutputContent(
+  toolName: string,
+  rawOutput: unknown,
+  parameters: Record<string, unknown>,
+  durationStr: string,
+  isError: boolean,
+): string {
+  let text = "";
+  if (typeof rawOutput === "string") {
+    text = rawOutput.trim();
+  } else if (rawOutput && typeof rawOutput === "object") {
+    try {
+      text = JSON.stringify(rawOutput, null, 2);
+    } catch {
+      text = String(rawOutput);
+    }
+  }
+
+  if (!text && parameters && Object.keys(parameters).length > 0) {
+    try {
+      text = JSON.stringify(parameters, null, 2);
+    } catch {
+      text = "";
+    }
+  }
+
+  const metaTag = isError ? " (error)" : " (completed)";
+  const header = `tool call${metaTag}:${durationStr ? `  ${durationStr}` : ""}`;
+
+  if (!text) {
+    return header;
+  }
+
+  // Format multi-line output inside a console block
+  if (text.includes("\n") || text.length > 80) {
+    const truncated = text.length > 2000 ? `${text.slice(0, 2000)}\n... (truncated ${text.length - 2000} chars)` : text;
+    return `${header}\n\`\`\`console\n${truncated}\n\`\`\``;
+  }
+
+  return `${header}: ${text}`;
+}
+
+/**
+ * Formats usage metrics into human-readable system entries.
+ */
+function formatUsageSummary(usage: Record<string, unknown>): string | null {
+  const inTokens = typeof usage.input_tokens === "number" ? usage.input_tokens : typeof usage.inputTokens === "number" ? usage.inputTokens : 0;
+  const outTokens = typeof usage.output_tokens === "number" ? usage.output_tokens : typeof usage.outputTokens === "number" ? usage.outputTokens : 0;
+  const thinkingTokens = typeof usage.thinking_tokens === "number" ? usage.thinking_tokens : typeof usage.thinkingTokens === "number" ? usage.thinkingTokens : 0;
+  const cachedTokens = typeof usage.cache_read_tokens === "number" ? usage.cache_read_tokens : typeof usage.cachedInputTokens === "number" ? usage.cachedInputTokens : 0;
+  const totalTokens = typeof usage.total_tokens === "number" ? usage.total_tokens : inTokens + outTokens + thinkingTokens;
+
+  if (totalTokens === 0 && inTokens === 0 && outTokens === 0) {
+    return null;
+  }
+
+  const parts = [`${totalTokens.toLocaleString()} tokens`];
+  const details: string[] = [];
+  if (inTokens > 0) details.push(`in: ${inTokens.toLocaleString()}`);
+  if (outTokens > 0) details.push(`out: ${outTokens.toLocaleString()}`);
+  if (thinkingTokens > 0) details.push(`thinking: ${thinkingTokens.toLocaleString()}`);
+  if (cachedTokens > 0) details.push(`cached: ${cachedTokens.toLocaleString()}`);
+
+  if (details.length > 0) {
+    parts.push(`(${details.join(", ")})`);
+  }
+
+  return `[antigravity] Usage updated: ${parts.join(" ")}`;
+}
+
 /**
  * Creates a stateful stdout stream parser for Antigravity CLI output.
  */
 export function createStdoutParser() {
-  const activeTools = new Map<string, { name: string; toolUseId: string; parameters: unknown }>();
+  const activeTools = new Map<string, { name: string; toolUseId: string; parameters: Record<string, unknown> }>();
   let toolCounter = 0;
+  let lastReportedTotalTokens = 0;
 
   function parseLine(line: string, ts: string): TranscriptEntry[] {
     const trimmed = line.trim();
@@ -84,13 +195,13 @@ export function createStdoutParser() {
     // Parse agy stream-json event line
     if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
       try {
-        const eventObj = JSON.parse(trimmed);
-        if (eventObj && typeof eventObj === "object") {
+        const eventObj = safeRecord(JSON.parse(trimmed));
+        if (eventObj) {
           const eventType = eventObj.event;
 
           // 1. Session Init Event
           if (eventType === "init") {
-            const convId = eventObj.conversation_id || eventObj.init?.conversation_id;
+            const convId = eventObj.conversation_id || (safeRecord(eventObj.init)?.conversation_id);
             return [
               {
                 kind: "system",
@@ -102,50 +213,61 @@ export function createStdoutParser() {
 
           // 2. Step Update Event
           if (eventType === "step_update" && eventObj.step_update) {
-            const update = eventObj.step_update;
-            const stepType = update.step_type;
-            const state = update.state;
+            const update = safeRecord(eventObj.step_update);
+            if (!update) return [];
+
+            const stepType = typeof update.step_type === "string" ? update.step_type : "";
+            const state = typeof update.state === "string" ? update.state : "";
+            const entries: TranscriptEntry[] = [];
+
+            // Extract usage metrics if present
+            const usageObj = safeRecord(update.usage);
+            if (usageObj) {
+              const currentTotal = typeof usageObj.total_tokens === "number" ? usageObj.total_tokens : 0;
+              if (currentTotal > 0 && currentTotal !== lastReportedTotalTokens) {
+                lastReportedTotalTokens = currentTotal;
+                const usageText = formatUsageSummary(usageObj);
+                if (usageText) {
+                  entries.push({ kind: "system", ts, text: usageText });
+                }
+              }
+            }
 
             // Tool Execution Step
             if (stepType === "tool") {
-              const toolName = update.tool_name || update.tool_info?.name || "tool";
-              const stepIndex = update.step_index ?? ++toolCounter;
+              const toolInfoObj = safeRecord(update.tool_info);
+              const toolName = (typeof update.tool_name === "string" ? update.tool_name : typeof toolInfoObj?.name === "string" ? toolInfoObj.name : "tool").trim();
+              const stepIndex = typeof update.step_index === "number" ? update.step_index : ++toolCounter;
               const toolUseId = `agy-tool-${stepIndex}-${toolName}`;
-              const parameters = update.tool_info?.parameters || {};
+              const rawParameters = safeRecord(toolInfoObj?.parameters) || safeRecord(update.parameters) || {};
+              const formattedInput = formatToolInput(toolName, rawParameters);
 
               if (state === "ACTIVE") {
-                activeTools.set(toolUseId, { name: toolName, toolUseId, parameters });
-                return [
-                  {
-                    kind: "tool_call",
-                    ts,
-                    name: toolName,
-                    input: parameters,
-                    toolUseId,
-                  },
-                ];
+                activeTools.set(toolUseId, { name: toolName, toolUseId, parameters: rawParameters });
+                entries.push({
+                  kind: "tool_call",
+                  ts,
+                  name: toolName,
+                  input: formattedInput,
+                  toolUseId,
+                });
+                return entries;
               }
 
               if (state === "DONE") {
                 const isError = update.is_error === true || update.state === "ERROR";
-                const durationStr = typeof update.duration_seconds === "number" ? `${update.duration_seconds.toFixed(2)}s` : "";
+                const durationNum = typeof update.duration_seconds === "number" ? update.duration_seconds : 0;
+                const durationStr = durationNum > 0 ? `${durationNum.toFixed(2)}s` : "";
 
-                let contentStr = "";
-                if (update.result) {
-                  contentStr = typeof update.result === "string" ? update.result : JSON.stringify(update.result);
-                } else if (parameters && Object.keys(parameters).length > 0) {
-                  contentStr = JSON.stringify(parameters);
-                } else {
-                  contentStr = durationStr ? `Completed in ${durationStr}` : "Done";
-                }
+                const rawOutput = toolInfoObj?.output ?? update.output ?? update.result;
+                const contentStr = formatToolOutputContent(toolName, rawOutput, rawParameters, durationStr, isError);
 
-                const entries: TranscriptEntry[] = [];
                 if (!activeTools.has(toolUseId)) {
                   entries.push({
                     kind: "tool_call",
                     ts,
                     name: toolName,
-                    input: parameters,
+                    input: formattedInput,
                     toolUseId,
                   });
                 }
@@ -164,7 +286,6 @@ export function createStdoutParser() {
 
             // Agent Response Step
             if (stepType === "agent_response") {
-              const entries: TranscriptEntry[] = [];
               if (typeof update.text_delta === "string" && update.text_delta.length > 0) {
                 entries.push({
                   kind: "assistant",
@@ -192,22 +313,34 @@ export function createStdoutParser() {
 
             // Internal Checkpoint / User input
             if (stepType === "checkpoint" || stepType === "user_input") {
-              return [];
+              return entries;
             }
+
+            return entries;
           }
 
           // 3. Final Result Event
           if (eventType === "result" && eventObj.result) {
-            const res = eventObj.result;
-            const entries: TranscriptEntry[] = [];
-            if (typeof res.response === "string" && res.response.trim().length > 0) {
-              entries.push({
-                kind: "assistant",
-                ts,
-                text: res.response,
-              });
+            const res = safeRecord(eventObj.result);
+            if (res) {
+              const entries: TranscriptEntry[] = [];
+              const usageObj = safeRecord(res.usage);
+              if (usageObj) {
+                const usageText = formatUsageSummary(usageObj);
+                if (usageText) {
+                  entries.push({ kind: "system", ts, text: usageText });
+                }
+              }
+
+              if (typeof res.response === "string" && res.response.trim().length > 0) {
+                entries.push({
+                  kind: "assistant",
+                  ts,
+                  text: res.response,
+                });
+              }
+              return entries;
             }
-            return entries;
           }
         }
       } catch {
@@ -227,6 +360,7 @@ export function createStdoutParser() {
   function reset() {
     activeTools.clear();
     toolCounter = 0;
+    lastReportedTotalTokens = 0;
   }
 
   return { parseLine, reset };

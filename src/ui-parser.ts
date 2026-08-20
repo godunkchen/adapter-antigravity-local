@@ -428,5 +428,7 @@ if (typeof module !== "undefined" && module && module.exports) {
     createStdoutParser,
   };
 }
+delete (exports as Record<string, unknown>).parseStdoutLine;
+
 
 

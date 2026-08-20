@@ -421,20 +421,12 @@ export function createStdoutParser() {
   return { parseLine, reset };
 }
 
-/** Shared persistent module parser instance so parseStdoutLine retains cross-line state */
-const defaultModuleParser = createStdoutParser();
-
-/**
- * Static parser entry point fallback.
- */
-export function parseStdoutLine(line: string, ts: string): TranscriptEntry[] {
-  return defaultModuleParser.parseLine(line, ts);
-}
-
-// Guarantee direct CJS exports compatibility without esbuild getter proxy issues
+// Guarantee direct CJS exports compatibility for Paperclip sandboxed worker.
+// Export ONLY createStdoutParser so sandboxed-parser-worker.ts instantiates fallbackParser = createStdoutParser()
 if (typeof module !== "undefined" && module && module.exports) {
   module.exports = {
-    parseStdoutLine,
     createStdoutParser,
   };
 }
+
+

@@ -51,7 +51,7 @@ describe("run cb8af9ad log chunks evaluation", () => {
       ts: "2026-08-20T00:00:01Z",
       name: "command_execution",
       input: {
-        command: "echo hello\nworld",
+        command: "echo hello\n\nworld",
       },
       toolUseId: "agy-tool-93-run_command",
     });

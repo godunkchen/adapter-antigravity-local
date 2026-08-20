@@ -78,11 +78,14 @@ export function printAntigravityStreamEvent(raw: string, debug: boolean): void {
             }
           }
 
-          // Agent Response Step
-          if (stepType === "agent_response") {
-            if (typeof update.text_delta === "string" && update.text_delta.length > 0) {
-              process.stdout.write(pc.green(update.text_delta));
-            } else if (typeof update.text === "string" && update.text.length > 0) {
+          // Agent Response Step / Text Delta
+          if (typeof update.text_delta === "string" && update.text_delta.length > 0) {
+            process.stdout.write(pc.green(update.text_delta));
+            return;
+          }
+
+          if (stepType === "agent_response" || !stepType) {
+            if (typeof update.text === "string" && update.text.length > 0) {
               console.log(pc.green(update.text));
             }
 

@@ -248,16 +248,19 @@ function createStdoutParser() {
         }
       }
 
-      // Agent Response Step
-      if (stepType === "agent_response") {
-        if (typeof update.text_delta === "string" && update.text_delta.length > 0) {
-          entries.push({
-            kind: "assistant",
-            ts,
-            text: update.text_delta,
-            delta: true,
-          });
-        } else if (typeof update.text === "string" && update.text.length > 0) {
+      // Agent Response Step (or standalone text_delta in step_update)
+      if (typeof update.text_delta === "string" && update.text_delta.length > 0) {
+        entries.push({
+          kind: "assistant",
+          ts,
+          text: update.text_delta,
+          delta: true,
+        });
+        return entries;
+      }
+
+      if (stepType === "agent_response" || !stepType) {
+        if (typeof update.text === "string" && update.text.length > 0) {
           entries.push({
             kind: "assistant",
             ts,
@@ -272,7 +275,9 @@ function createStdoutParser() {
             text: update.thinking,
           });
         }
-        return entries;
+        if (entries.length > 0) {
+          return entries;
+        }
       }
 
       // User Input / Interaction Step
@@ -381,7 +386,17 @@ function createStdoutParser() {
           return processEventObject(eventObj, ts);
         }
       } catch {
-        // Incomplete JSON payload, keep accumulating
+        // Try sanitizing unescaped newlines in JSON strings
+        try {
+          const sanitized = candidateTrimmed.replace(/[\r\n]+/g, "\\n");
+          const eventObj = safeRecord(JSON.parse(sanitized));
+          if (eventObj && (typeof eventObj.event === "string" || typeof eventObj.type === "string")) {
+            jsonBuffer = "";
+            return processEventObject(eventObj, ts);
+          }
+        } catch {
+          // Still incomplete payload
+        }
         jsonBuffer = candidate;
         return [];
       }
@@ -394,7 +409,8 @@ function createStdoutParser() {
     }
 
     // Stderr / Errors
-    if (trimmed.startsWith("Error:") || trimmed.startsWith("ERROR:") || trimmed.startsWith("Traceback")) {
+    const lower = trimmed.toLowerCase();
+    if (lower.startsWith("error:") || lower.startsWith("fatal:") || lower.startsWith("traceback")) {
       return [{ kind: "stderr", ts, text: trimmed }];
     }
 

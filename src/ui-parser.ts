@@ -8,6 +8,13 @@
  * 3. Export createStdoutParser and parseStdoutLine.
  */
 
+export interface TranscriptInitEntry {
+  kind: "init";
+  ts: string;
+  model: string;
+  sessionId: string;
+}
+
 export interface TranscriptAssistantEntry {
   kind: "assistant";
   ts: string;
@@ -57,6 +64,7 @@ export interface TranscriptStdoutEntry {
 }
 
 export type TranscriptEntry =
+  | TranscriptInitEntry
   | TranscriptAssistantEntry
   | TranscriptThinkingEntry
   | TranscriptToolCallEntry
@@ -73,40 +81,58 @@ function safeRecord(val: unknown): Record<string, unknown> | null {
 }
 
 /**
- * Formats tool input parameters into human-readable summary strings.
+ * Formats tool input parameters and returns clean display name & formatted parameters.
  */
-
-function formatToolInput(toolName: string, parameters: Record<string, unknown>): Record<string, unknown> {
+function resolveToolCallDisplay(toolName: string, parameters: Record<string, unknown>): { name: string; input: Record<string, unknown> } {
   const name = (toolName || "").toLowerCase();
-  
+
   if (name === "run_command" && typeof parameters.CommandLine === "string") {
-    return { command: parameters.CommandLine, ...(parameters.Cwd ? { cwd: parameters.Cwd } : {}) };
+    const cmd = parameters.CommandLine.trim();
+    return {
+      name: cmd,
+      input: { text: cmd, ...(parameters.Cwd ? { cwd: parameters.Cwd } : {}) },
+    };
   }
 
   if (name === "grep_search" && typeof parameters.Query === "string") {
-    return { query: parameters.Query, searchPath: parameters.SearchPath || "." };
+    const query = parameters.Query;
+    const path = parameters.SearchPath || ".";
+    return {
+      name: `grep "${query}" ${path}`,
+      input: { query, searchPath: path },
+    };
   }
 
   if (name === "find_by_name" && typeof parameters.Pattern === "string") {
-    return { pattern: parameters.Pattern, directory: parameters.SearchDirectory || "." };
+    const pattern = parameters.Pattern;
+    const dir = parameters.SearchDirectory || ".";
+    return {
+      name: `find ${dir} -name "${pattern}"`,
+      input: { pattern, directory: dir },
+    };
   }
 
   if ((name === "view_file" || name === "read_file") && typeof parameters.AbsolutePath === "string") {
-    return { file: parameters.AbsolutePath };
+    return {
+      name: `read ${parameters.AbsolutePath}`,
+      input: { file: parameters.AbsolutePath },
+    };
   }
 
   if ((name === "write_to_file" || name === "replace_file_content") && typeof parameters.TargetFile === "string") {
-    return { file: parameters.TargetFile, ...(parameters.Instruction ? { instruction: parameters.Instruction } : {}) };
+    return {
+      name: `write ${parameters.TargetFile}`,
+      input: { file: parameters.TargetFile, ...(parameters.Instruction ? { instruction: parameters.Instruction } : {}) },
+    };
   }
 
-  return parameters;
+  return { name: toolName || "tool_call", input: parameters };
 }
 
 /**
- * Formats tool execution output into clean Markdown code blocks.
+ * Formats tool execution output into clean text.
  */
 function formatToolOutputContent(
-  toolName: string,
   rawOutput: unknown,
   parameters: Record<string, unknown>,
   durationStr: string,
@@ -138,41 +164,27 @@ function formatToolOutputContent(
     return header;
   }
 
-  // Format multi-line output inside a console block
   if (text.includes("\n") || text.length > 80) {
     const truncated = text.length > 2000 ? `${text.slice(0, 2000)}\n... (truncated ${text.length - 2000} chars)` : text;
-    return `${header}\n\`\`\`console\n${truncated}\n\`\`\``;
+    return `${header}: \`\`\`console\n${truncated}\n\`\`\``;
   }
 
   return `${header}: ${text}`;
 }
 
 /**
- * Formats usage metrics into human-readable system entries.
+ * Formats usage metrics matching Paperclip system usage entries.
  */
 function formatUsageSummary(usage: Record<string, unknown>): string | null {
   const inTokens = typeof usage.input_tokens === "number" ? usage.input_tokens : typeof usage.inputTokens === "number" ? usage.inputTokens : 0;
   const outTokens = typeof usage.output_tokens === "number" ? usage.output_tokens : typeof usage.outputTokens === "number" ? usage.outputTokens : 0;
-  const thinkingTokens = typeof usage.thinking_tokens === "number" ? usage.thinking_tokens : typeof usage.thinkingTokens === "number" ? usage.thinkingTokens : 0;
-  const cachedTokens = typeof usage.cache_read_tokens === "number" ? usage.cache_read_tokens : typeof usage.cachedInputTokens === "number" ? usage.cachedInputTokens : 0;
-  const totalTokens = typeof usage.total_tokens === "number" ? usage.total_tokens : inTokens + outTokens + thinkingTokens;
+  const totalTokens = typeof usage.total_tokens === "number" ? usage.total_tokens : inTokens + outTokens;
 
   if (totalTokens === 0 && inTokens === 0 && outTokens === 0) {
     return null;
   }
 
-  const parts = [`${totalTokens.toLocaleString()} tokens`];
-  const details: string[] = [];
-  if (inTokens > 0) details.push(`in: ${inTokens.toLocaleString()}`);
-  if (outTokens > 0) details.push(`out: ${outTokens.toLocaleString()}`);
-  if (thinkingTokens > 0) details.push(`thinking: ${thinkingTokens.toLocaleString()}`);
-  if (cachedTokens > 0) details.push(`cached: ${cachedTokens.toLocaleString()}`);
-
-  if (details.length > 0) {
-    parts.push(`(${details.join(", ")})`);
-  }
-
-  return `[antigravity] Usage updated: ${parts.join(" ")}`;
+  return `usage updated: ${totalTokens}/200000 (${totalTokens}/200000 ctx)`;
 }
 
 /**
@@ -199,14 +211,16 @@ export function createStdoutParser() {
         if (eventObj) {
           const eventType = eventObj.event;
 
-          // 1. Session Init Event
+          // 1. Session Init Event -> emit INIT kind
           if (eventType === "init") {
-            const convId = eventObj.conversation_id || (safeRecord(eventObj.init)?.conversation_id);
+            const convId = typeof eventObj.conversation_id === "string" ? eventObj.conversation_id : (safeRecord(eventObj.init)?.conversation_id as string) || "";
+            const modelName = (safeRecord(eventObj.init)?.model as string) || "gemini-3.6-flash";
             return [
               {
-                kind: "system",
+                kind: "init",
                 ts,
-                text: `[antigravity] Session initialized${convId ? ` (${convId})` : ""}`,
+                model: modelName,
+                sessionId: convId,
               },
             ];
           }
@@ -220,7 +234,7 @@ export function createStdoutParser() {
             const state = typeof update.state === "string" ? update.state : "";
             const entries: TranscriptEntry[] = [];
 
-            // Extract usage metrics if present
+            // Extract usage metrics if present -> emit SYSTEM kind
             const usageObj = safeRecord(update.usage);
             if (usageObj) {
               const currentTotal = typeof usageObj.total_tokens === "number" ? usageObj.total_tokens : 0;
@@ -240,14 +254,14 @@ export function createStdoutParser() {
               const stepIndex = typeof update.step_index === "number" ? update.step_index : ++toolCounter;
               const toolUseId = `agy-tool-${stepIndex}-${toolName}`;
               const rawParameters = safeRecord(toolInfoObj?.parameters) || safeRecord(update.parameters) || {};
-              const formattedInput = formatToolInput(toolName, rawParameters);
+              const { name: displayName, input: formattedInput } = resolveToolCallDisplay(toolName, rawParameters);
 
               if (state === "ACTIVE") {
-                activeTools.set(toolUseId, { name: toolName, toolUseId, parameters: rawParameters });
+                activeTools.set(toolUseId, { name: displayName, toolUseId, parameters: rawParameters });
                 entries.push({
                   kind: "tool_call",
                   ts,
-                  name: toolName,
+                  name: displayName,
                   input: formattedInput,
                   toolUseId,
                 });
@@ -260,13 +274,13 @@ export function createStdoutParser() {
                 const durationStr = durationNum > 0 ? `${durationNum.toFixed(2)}s` : "";
 
                 const rawOutput = toolInfoObj?.output ?? update.output ?? update.result;
-                const contentStr = formatToolOutputContent(toolName, rawOutput, rawParameters, durationStr, isError);
+                const contentStr = formatToolOutputContent(rawOutput, rawParameters, durationStr, isError);
 
                 if (!activeTools.has(toolUseId)) {
                   entries.push({
                     kind: "tool_call",
                     ts,
-                    name: toolName,
+                    name: displayName,
                     input: formattedInput,
                     toolUseId,
                   });
@@ -366,10 +380,12 @@ export function createStdoutParser() {
   return { parseLine, reset };
 }
 
+/** Shared persistent module parser instance so parseStdoutLine retains cross-line state */
+const defaultModuleParser = createStdoutParser();
+
 /**
  * Static parser entry point fallback.
  */
 export function parseStdoutLine(line: string, ts: string): TranscriptEntry[] {
-  const parser = createStdoutParser();
-  return parser.parseLine(line, ts);
+  return defaultModuleParser.parseLine(line, ts);
 }

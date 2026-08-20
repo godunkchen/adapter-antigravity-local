@@ -2,20 +2,21 @@ import { describe, it, expect } from "vitest";
 import { createStdoutParser, parseStdoutLine } from "../../src/ui-parser.js";
 
 describe("ui-parser", () => {
-  it("parses init events into system transcript entries", () => {
+  it("parses init events into init transcript entries", () => {
     const parser = createStdoutParser();
     const line = JSON.stringify({
       event: "init",
       conversation_id: "conv-123",
-      init: { cwd: "/home/user" },
+      init: { model: "gemini-3.6-flash", cwd: "/home/user" },
     });
     const entries = parser.parseLine(line, "2026-08-20T00:00:00Z");
 
     expect(entries).toHaveLength(1);
     expect(entries[0]).toEqual({
-      kind: "system",
+      kind: "init",
       ts: "2026-08-20T00:00:00Z",
-      text: "[antigravity] Session initialized (conv-123)",
+      model: "gemini-3.6-flash",
+      sessionId: "conv-123",
     });
   });
 
@@ -40,7 +41,7 @@ describe("ui-parser", () => {
     });
   });
 
-  it("parses tool call ACTIVE and DONE events with tool_info.output and formatted input", () => {
+  it("parses tool call ACTIVE and DONE events with tool_info.output and formatted display input", () => {
     const parser = createStdoutParser();
 
     const callLine = JSON.stringify({
@@ -62,7 +63,7 @@ describe("ui-parser", () => {
     expect(callEntries[0]).toEqual({
       kind: "tool_call",
       ts: "2026-08-20T00:00:00Z",
-      name: "grep_search",
+      name: 'grep "PAPERCLIP_API_KEY" /tmp',
       input: { query: "PAPERCLIP_API_KEY", searchPath: "/tmp" },
       toolUseId: "agy-tool-21-grep_search",
     });
@@ -89,12 +90,12 @@ describe("ui-parser", () => {
       kind: "tool_result",
       ts: "2026-08-20T00:00:08Z",
       toolUseId: "agy-tool-21-grep_search",
-      content: "tool call (completed):  8.63s\n```console\n./child-resp.json\n./wake-re.md\n./newissue.py\n```",
+      content: "tool call (completed):  8.63s: ```console\n./child-resp.json\n./wake-re.md\n./newissue.py\n```",
       isError: false,
     });
   });
 
-  it("emits token usage system entries when step updates contain usage totals", () => {
+  it("emits token usage system entries matching paperclip usage format", () => {
     const parser = createStdoutParser();
     const line = JSON.stringify({
       event: "step_update",
@@ -117,7 +118,7 @@ describe("ui-parser", () => {
     expect(entries[0]).toEqual({
       kind: "system",
       ts: "2026-08-20T00:00:00Z",
-      text: "[antigravity] Usage updated: 14,647 tokens (in: 13,877, out: 770, thinking: 689, cached: 12,193)",
+      text: "usage updated: 14647/200000 (14647/200000 ctx)",
     });
     expect(entries[1]).toEqual({
       kind: "assistant",

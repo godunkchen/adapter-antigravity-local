@@ -41,7 +41,7 @@ describe("ui-parser", () => {
     });
   });
 
-  it("parses tool call ACTIVE and DONE events with tool_info.output and formatted display input", () => {
+  it("parses tool call ACTIVE and DONE events with tool_info.output and command input shape for Paperclip isCommandTool", () => {
     const parser = createStdoutParser();
 
     const callLine = JSON.stringify({
@@ -63,8 +63,8 @@ describe("ui-parser", () => {
     expect(callEntries[0]).toEqual({
       kind: "tool_call",
       ts: "2026-08-20T00:00:00Z",
-      name: 'grep "PAPERCLIP_API_KEY" /tmp',
-      input: { query: "PAPERCLIP_API_KEY", searchPath: "/tmp" },
+      name: "command_execution",
+      input: { command: 'grep "PAPERCLIP_API_KEY" /tmp' },
       toolUseId: "agy-tool-21-grep_search",
     });
 

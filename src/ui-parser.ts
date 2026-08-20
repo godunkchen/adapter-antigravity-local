@@ -81,52 +81,60 @@ function safeRecord(val: unknown): Record<string, unknown> | null {
 }
 
 /**
- * Formats tool input parameters and returns clean display name & formatted parameters.
+ * Maps agy tool calls into Paperclip command tool execution shapes.
+ * Paperclip UI's isCommandTool requires:
+ * 1. name === "command_execution" or "bash" or "shell"
+ * 2. input contains { command: string }
  */
 function resolveToolCallDisplay(toolName: string, parameters: Record<string, unknown>): { name: string; input: Record<string, unknown> } {
   const name = (toolName || "").toLowerCase();
 
-  if (name === "run_command" && typeof parameters.CommandLine === "string") {
-    const cmd = parameters.CommandLine.trim();
+  if (name === "run_command") {
+    const commandStr = typeof parameters.CommandLine === "string" ? parameters.CommandLine : "";
     return {
-      name: cmd,
-      input: { text: cmd, ...(parameters.Cwd ? { cwd: parameters.Cwd } : {}) },
+      name: "command_execution",
+      input: { command: commandStr, ...(parameters.Cwd ? { cwd: parameters.Cwd } : {}) },
     };
   }
 
-  if (name === "grep_search" && typeof parameters.Query === "string") {
-    const query = parameters.Query;
-    const path = parameters.SearchPath || ".";
+  if (name === "grep_search") {
+    const query = typeof parameters.Query === "string" ? parameters.Query : "";
+    const path = typeof parameters.SearchPath === "string" ? parameters.SearchPath : ".";
     return {
-      name: `grep "${query}" ${path}`,
-      input: { query, searchPath: path },
+      name: "command_execution",
+      input: { command: `grep "${query}" ${path}` },
     };
   }
 
-  if (name === "find_by_name" && typeof parameters.Pattern === "string") {
-    const pattern = parameters.Pattern;
-    const dir = parameters.SearchDirectory || ".";
+  if (name === "find_by_name") {
+    const pattern = typeof parameters.Pattern === "string" ? parameters.Pattern : "";
+    const dir = typeof parameters.SearchDirectory === "string" ? parameters.SearchDirectory : ".";
     return {
-      name: `find ${dir} -name "${pattern}"`,
-      input: { pattern, directory: dir },
+      name: "command_execution",
+      input: { command: `find ${dir} -name "${pattern}"` },
     };
   }
 
-  if ((name === "view_file" || name === "read_file") && typeof parameters.AbsolutePath === "string") {
+  if (name === "view_file" || name === "read_file") {
+    const file = typeof parameters.AbsolutePath === "string" ? parameters.AbsolutePath : "";
     return {
-      name: `read ${parameters.AbsolutePath}`,
-      input: { file: parameters.AbsolutePath },
+      name: "command_execution",
+      input: { command: `cat ${file}` },
     };
   }
 
-  if ((name === "write_to_file" || name === "replace_file_content") && typeof parameters.TargetFile === "string") {
+  if (name === "write_to_file" || name === "replace_file_content") {
+    const file = typeof parameters.TargetFile === "string" ? parameters.TargetFile : "";
     return {
-      name: `write ${parameters.TargetFile}`,
-      input: { file: parameters.TargetFile, ...(parameters.Instruction ? { instruction: parameters.Instruction } : {}) },
+      name: "command_execution",
+      input: { command: `write ${file}` },
     };
   }
 
-  return { name: toolName || "tool_call", input: parameters };
+  return {
+    name: "command_execution",
+    input: { command: toolName || "tool_call", ...parameters },
+  };
 }
 
 /**

@@ -198,7 +198,7 @@ function formatUsageSummary(usage: Record<string, unknown>): string | null {
 /**
  * Creates a stateful stdout stream parser for Antigravity CLI output.
  */
-export function createStdoutParser() {
+function createStdoutParser() {
   const activeTools = new Map<string, { name: string; toolUseId: string; parameters: Record<string, unknown> }>();
   let jsonBuffer = "";
   let toolCounter = 0;
@@ -421,14 +421,21 @@ export function createStdoutParser() {
   return { parseLine, reset };
 }
 
-// Guarantee direct CJS exports compatibility for Paperclip sandboxed worker.
-// Export ONLY createStdoutParser so sandboxed-parser-worker.ts instantiates fallbackParser = createStdoutParser()
+const defaultModuleParser = createStdoutParser();
+
+function parseStdoutLine(line: string, ts: string): TranscriptEntry[] {
+  return defaultModuleParser.parseLine(line, ts);
+}
+
+export { createStdoutParser, parseStdoutLine };
+
 if (typeof module !== "undefined" && module && module.exports) {
   module.exports = {
     createStdoutParser,
+    parseStdoutLine,
   };
 }
-delete (exports as Record<string, unknown>).parseStdoutLine;
+
 
 
 

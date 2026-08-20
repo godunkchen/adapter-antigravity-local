@@ -49,11 +49,12 @@ describe("run cb8af9ad log chunks evaluation", () => {
     expect(res2[0]).toEqual({
       kind: "tool_call",
       ts: "2026-08-20T00:00:01Z",
-      name: "command_execution",
+      name: "run_command",
       input: {
-        command: "echo hello\n\nworld",
+        CommandLine: "echo hello\nworld",
       },
       toolUseId: "agy-tool-93-run_command",
     });
   });
 });
+

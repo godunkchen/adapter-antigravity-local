@@ -29,20 +29,42 @@ export interface TranscriptThinkingEntry {
   delta?: boolean;
 }
 
+export interface TranscriptUserEntry {
+  kind: "user";
+  ts: string;
+  text: string;
+}
+
 export interface TranscriptToolCallEntry {
   kind: "tool_call";
   ts: string;
   name: string;
   input: unknown;
   toolUseId?: string;
+  invocationId?: string;
+  actionRequestId?: string;
 }
 
 export interface TranscriptToolResultEntry {
   kind: "tool_result";
   ts: string;
   toolUseId: string;
+  toolName?: string;
   content: string;
   isError: boolean;
+}
+
+export interface TranscriptResultEntry {
+  kind: "result";
+  ts: string;
+  text: string;
+  inputTokens: number;
+  outputTokens: number;
+  cachedTokens: number;
+  costUsd: number;
+  subtype: string;
+  isError: boolean;
+  errors: string[];
 }
 
 export interface TranscriptSystemEntry {
@@ -67,8 +89,10 @@ export type TranscriptEntry =
   | TranscriptInitEntry
   | TranscriptAssistantEntry
   | TranscriptThinkingEntry
+  | TranscriptUserEntry
   | TranscriptToolCallEntry
   | TranscriptToolResultEntry
+  | TranscriptResultEntry
   | TranscriptSystemEntry
   | TranscriptStderrEntry
   | TranscriptStdoutEntry;
@@ -80,113 +104,46 @@ function safeRecord(val: unknown): Record<string, unknown> | null {
   return null;
 }
 
-/**
- * Maps agy tool calls into Paperclip command tool execution shapes.
- * Paperclip UI's isCommandTool requires:
- * 1. name === "command_execution" or "bash" or "shell"
- * 2. input contains { command: string }
- */
-function resolveToolCallDisplay(toolName: string, parameters: Record<string, unknown>): { name: string; input: Record<string, unknown> } {
-  const name = (toolName || "").toLowerCase();
+function asString(val: unknown, fallback = ""): string {
+  return typeof val === "string" ? val : fallback;
+}
 
-  if (name === "run_command") {
-    const commandStr = typeof parameters.CommandLine === "string" ? parameters.CommandLine : "";
-    return {
-      name: "command_execution",
-      input: { command: commandStr, ...(parameters.Cwd ? { cwd: parameters.Cwd } : {}) },
-    };
-  }
-
-  if (name === "grep_search") {
-    const query = typeof parameters.Query === "string" ? parameters.Query : "";
-    const path = typeof parameters.SearchPath === "string" ? parameters.SearchPath : ".";
-    return {
-      name: "command_execution",
-      input: { command: `grep "${query}" ${path}` },
-    };
-  }
-
-  if (name === "find_by_name") {
-    const pattern = typeof parameters.Pattern === "string" ? parameters.Pattern : "";
-    const dir = typeof parameters.SearchDirectory === "string" ? parameters.SearchDirectory : ".";
-    return {
-      name: "command_execution",
-      input: { command: `find ${dir} -name "${pattern}"` },
-    };
-  }
-
-  if (name === "view_file" || name === "read_file") {
-    const file = typeof parameters.AbsolutePath === "string" ? parameters.AbsolutePath : "";
-    return {
-      name: "command_execution",
-      input: { command: `cat ${file}` },
-    };
-  }
-
-  if (name === "write_to_file" || name === "replace_file_content") {
-    const file = typeof parameters.TargetFile === "string" ? parameters.TargetFile : "";
-    return {
-      name: "command_execution",
-      input: { command: `write ${file}` },
-    };
-  }
-
-  return {
-    name: "command_execution",
-    input: { command: toolName || "tool_call", ...parameters },
-  };
+function asNumber(val: unknown, fallback = 0): number {
+  return typeof val === "number" && Number.isFinite(val) ? val : fallback;
 }
 
 /**
- * Formats tool execution output into clean text.
+ * Formats tool execution output into clean text without synthetic markdown code fences or duration headers.
+ * The Paperclip UI natively renders code formatting, status icons, and durations from entry timestamps.
  */
-function formatToolOutputContent(
+function formatToolOutput(
   rawOutput: unknown,
-  parameters: Record<string, unknown>,
-  durationStr: string,
+  toolName: string,
   isError: boolean,
 ): string {
-  let text = "";
   if (typeof rawOutput === "string") {
-    text = rawOutput.trim();
-  } else if (rawOutput && typeof rawOutput === "object") {
+    return rawOutput;
+  }
+  if (rawOutput && typeof rawOutput === "object") {
     try {
-      text = JSON.stringify(rawOutput, null, 2);
+      return JSON.stringify(rawOutput, null, 2);
     } catch {
-      text = String(rawOutput);
+      return String(rawOutput);
     }
   }
-
-  if (!text && parameters && Object.keys(parameters).length > 0) {
-    try {
-      text = JSON.stringify(parameters, null, 2);
-    } catch {
-      text = "";
-    }
+  if (rawOutput !== undefined && rawOutput !== null) {
+    return String(rawOutput);
   }
-
-  const metaTag = isError ? " (error)" : " (completed)";
-  const header = `tool call${metaTag}:${durationStr ? `  ${durationStr}` : ""}`;
-
-  if (!text) {
-    return header;
-  }
-
-  if (text.includes("\n") || text.length > 80) {
-    const truncated = text.length > 2000 ? `${text.slice(0, 2000)}\n... (truncated ${text.length - 2000} chars)` : text;
-    return `${header}: \`\`\`console\n${truncated}\n\`\`\``;
-  }
-
-  return `${header}: ${text}`;
+  return isError ? `${toolName} execution failed` : `${toolName} completed`;
 }
 
 /**
- * Formats usage metrics matching Paperclip system usage entries.
+ * Formats usage metrics matching Paperclip system usage entries for step updates.
  */
 function formatUsageSummary(usage: Record<string, unknown>): string | null {
-  const inTokens = typeof usage.input_tokens === "number" ? usage.input_tokens : typeof usage.inputTokens === "number" ? usage.inputTokens : 0;
-  const outTokens = typeof usage.output_tokens === "number" ? usage.output_tokens : typeof usage.outputTokens === "number" ? usage.outputTokens : 0;
-  const totalTokens = typeof usage.total_tokens === "number" ? usage.total_tokens : inTokens + outTokens;
+  const inTokens = asNumber(usage.input_tokens, asNumber(usage.inputTokens, 0));
+  const outTokens = asNumber(usage.output_tokens, asNumber(usage.outputTokens, 0));
+  const totalTokens = asNumber(usage.total_tokens, inTokens + outTokens);
 
   if (totalTokens === 0 && inTokens === 0 && outTokens === 0) {
     return null;
@@ -205,12 +162,12 @@ function createStdoutParser() {
   let lastReportedTotalTokens = 0;
 
   function processEventObject(eventObj: Record<string, unknown>, ts: string): TranscriptEntry[] {
-    const eventType = eventObj.event;
+    const eventType = asString(eventObj.event, asString(eventObj.type));
 
     // 1. Session Init Event -> emit INIT kind
     if (eventType === "init") {
-      const convId = typeof eventObj.conversation_id === "string" ? eventObj.conversation_id : (safeRecord(eventObj.init)?.conversation_id as string) || "";
-      const modelName = (safeRecord(eventObj.init)?.model as string) || "gemini-3.6-flash";
+      const convId = asString(eventObj.conversation_id) || asString(safeRecord(eventObj.init)?.conversation_id);
+      const modelName = asString(safeRecord(eventObj.init)?.model, "gemini-3.6-flash");
       return [
         {
           kind: "init",
@@ -226,14 +183,14 @@ function createStdoutParser() {
       const update = safeRecord(eventObj.step_update);
       if (!update) return [];
 
-      const stepType = typeof update.step_type === "string" ? update.step_type : "";
-      const state = typeof update.state === "string" ? update.state : "";
+      const stepType = asString(update.step_type);
+      const state = asString(update.state);
       const entries: TranscriptEntry[] = [];
 
-      // Extract usage metrics if present -> emit SYSTEM kind
+      // Extract interim usage metrics if present -> emit SYSTEM kind
       const usageObj = safeRecord(update.usage);
       if (usageObj) {
-        const currentTotal = typeof usageObj.total_tokens === "number" ? usageObj.total_tokens : 0;
+        const currentTotal = asNumber(usageObj.total_tokens, 0);
         if (currentTotal > 0 && currentTotal !== lastReportedTotalTokens) {
           lastReportedTotalTokens = currentTotal;
           const usageText = formatUsageSummary(usageObj);
@@ -246,19 +203,18 @@ function createStdoutParser() {
       // Tool Execution Step
       if (stepType === "tool") {
         const toolInfoObj = safeRecord(update.tool_info);
-        const toolName = (typeof update.tool_name === "string" ? update.tool_name : typeof toolInfoObj?.name === "string" ? toolInfoObj.name : "tool").trim();
+        const toolName = (asString(update.tool_name) || asString(toolInfoObj?.name) || "tool").trim();
         const stepIndex = typeof update.step_index === "number" ? update.step_index : ++toolCounter;
-        const toolUseId = `agy-tool-${stepIndex}-${toolName}`;
+        const toolUseId = asString(update.tool_use_id) || asString(toolInfoObj?.tool_use_id) || asString(update.call_id) || `agy-tool-${stepIndex}-${toolName}`;
         const rawParameters = safeRecord(toolInfoObj?.parameters) || safeRecord(update.parameters) || {};
-        const { name: displayName, input: formattedInput } = resolveToolCallDisplay(toolName, rawParameters);
 
         if (state === "ACTIVE") {
-          activeTools.set(toolUseId, { name: displayName, toolUseId, parameters: rawParameters });
+          activeTools.set(toolUseId, { name: toolName, toolUseId, parameters: rawParameters });
           entries.push({
             kind: "tool_call",
             ts,
-            name: displayName,
-            input: formattedInput,
+            name: toolName,
+            input: rawParameters,
             toolUseId,
           });
           return entries;
@@ -266,18 +222,15 @@ function createStdoutParser() {
 
         if (state === "DONE") {
           const isError = update.is_error === true || update.state === "ERROR";
-          const durationNum = typeof update.duration_seconds === "number" ? update.duration_seconds : 0;
-          const durationStr = durationNum > 0 ? `${durationNum.toFixed(2)}s` : "";
-
-          const rawOutput = toolInfoObj?.output ?? update.output ?? update.result;
-          const contentStr = formatToolOutputContent(rawOutput, rawParameters, durationStr, isError);
+          const rawOutput = toolInfoObj?.output ?? update.output ?? update.result ?? update.error;
+          const content = formatToolOutput(rawOutput, toolName, isError);
 
           if (!activeTools.has(toolUseId)) {
             entries.push({
               kind: "tool_call",
               ts,
-              name: displayName,
-              input: formattedInput,
+              name: toolName,
+              input: rawParameters,
               toolUseId,
             });
           }
@@ -287,7 +240,8 @@ function createStdoutParser() {
             kind: "tool_result",
             ts,
             toolUseId,
-            content: contentStr,
+            toolName,
+            content,
             isError,
           });
           return entries;
@@ -321,36 +275,83 @@ function createStdoutParser() {
         return entries;
       }
 
-      // Internal Checkpoint / User input
-      if (stepType === "checkpoint" || stepType === "user_input") {
+      // User Input / Interaction Step
+      if (stepType === "user_input" || stepType === "user") {
+        const userText = asString(update.text) || asString(update.prompt) || asString(eventObj.message);
+        if (userText.trim()) {
+          entries.push({
+            kind: "user",
+            ts,
+            text: userText.trim(),
+          });
+        }
+        return entries;
+      }
+
+      // Internal Checkpoint
+      if (stepType === "checkpoint") {
         return entries;
       }
 
       return entries;
     }
 
-    // 3. Final Result Event
-    if (eventType === "result" && eventObj.result) {
-      const res = safeRecord(eventObj.result);
-      if (res) {
-        const entries: TranscriptEntry[] = [];
-        const usageObj = safeRecord(res.usage);
-        if (usageObj) {
-          const usageText = formatUsageSummary(usageObj);
-          if (usageText) {
-            entries.push({ kind: "system", ts, text: usageText });
-          }
-        }
-
-        if (typeof res.response === "string" && res.response.trim().length > 0) {
-          entries.push({
-            kind: "assistant",
-            ts,
-            text: res.response,
-          });
-        }
-        return entries;
+    // 3. User Message Event
+    if (eventType === "user") {
+      const userText = asString(eventObj.text) || asString(eventObj.message) || asString(safeRecord(eventObj.message)?.text);
+      if (userText.trim()) {
+        return [{ kind: "user", ts, text: userText.trim() }];
       }
+      return [];
+    }
+
+    // 4. Final Result Event -> emit RESULT kind (and assistant text if not already emitted)
+    if (eventType === "result" && eventObj.result) {
+      const res = safeRecord(eventObj.result) || {};
+      const usageObj = safeRecord(res.usage) || {};
+      const inTokens = asNumber(usageObj.input_tokens, asNumber(usageObj.inputTokens, 0));
+      const outTokens = asNumber(usageObj.output_tokens, asNumber(usageObj.outputTokens, 0));
+      const cachedTokens = asNumber(
+        usageObj.cache_read_tokens,
+        asNumber(usageObj.cached_input_tokens, asNumber(usageObj.cachedInputTokens, 0)),
+      );
+      const costUsd = asNumber(res.cost_usd, asNumber(res.costUsd, asNumber(res.total_cost_usd, 0)));
+      const status = asString(res.status, "success").toLowerCase();
+      const isError = res.is_error === true || status === "error" || status === "failed";
+      const responseText = asString(res.response, asString(res.text));
+      const errors = isError
+        ? [asString(res.error, responseText || "Run failed")].filter(Boolean)
+        : [];
+
+      const entries: TranscriptEntry[] = [];
+      if (responseText && !isError) {
+        entries.push({
+          kind: "assistant",
+          ts,
+          text: responseText,
+        });
+      }
+
+      entries.push({
+        kind: "result",
+        ts,
+        text: responseText,
+        inputTokens: inTokens,
+        outputTokens: outTokens,
+        cachedTokens,
+        costUsd,
+        subtype: status,
+        isError,
+        errors,
+      });
+
+      return entries;
+    }
+
+    // 5. Error Event
+    if (eventType === "error" || eventObj.error) {
+      const errText = asString(eventObj.error, asString(safeRecord(eventObj.error)?.message, JSON.stringify(eventObj.error)));
+      return [{ kind: "stderr", ts, text: errText || "error" }];
     }
 
     return [];
@@ -375,22 +376,12 @@ function createStdoutParser() {
     if (candidateTrimmed.startsWith("{")) {
       try {
         const eventObj = safeRecord(JSON.parse(candidateTrimmed));
-        if (eventObj && typeof eventObj.event === "string") {
+        if (eventObj && (typeof eventObj.event === "string" || typeof eventObj.type === "string")) {
           jsonBuffer = "";
           return processEventObject(eventObj, ts);
         }
       } catch {
-        // Try sanitizing unescaped newlines in JSON strings
-        try {
-          const sanitized = candidateTrimmed.replace(/[\r\n]+/g, "\\n");
-          const eventObj = safeRecord(JSON.parse(sanitized));
-          if (eventObj && typeof eventObj.event === "string") {
-            jsonBuffer = "";
-            return processEventObject(eventObj, ts);
-          }
-        } catch {
-          // Still incomplete payload
-        }
+        // Incomplete JSON payload, keep accumulating
         jsonBuffer = candidate;
         return [];
       }
@@ -435,6 +426,7 @@ if (typeof module !== "undefined" && module && module.exports) {
     parseStdoutLine,
   };
 }
+
 
 
 

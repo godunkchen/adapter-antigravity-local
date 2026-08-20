@@ -41,7 +41,7 @@ describe("ui-parser", () => {
     });
   });
 
-  it("parses tool call ACTIVE and DONE events with tool_info.output and command input shape for Paperclip isCommandTool", () => {
+  it("parses tool call ACTIVE and DONE events with native tool names, structured parameters, and clean output", () => {
     const parser = createStdoutParser();
 
     const callLine = JSON.stringify({
@@ -63,8 +63,8 @@ describe("ui-parser", () => {
     expect(callEntries[0]).toEqual({
       kind: "tool_call",
       ts: "2026-08-20T00:00:00Z",
-      name: "command_execution",
-      input: { command: 'grep "PAPERCLIP_API_KEY" /tmp' },
+      name: "grep_search",
+      input: { Query: "PAPERCLIP_API_KEY", SearchPath: "/tmp" },
       toolUseId: "agy-tool-21-grep_search",
     });
 
@@ -90,8 +90,29 @@ describe("ui-parser", () => {
       kind: "tool_result",
       ts: "2026-08-20T00:00:08Z",
       toolUseId: "agy-tool-21-grep_search",
-      content: "tool call (completed):  8.63s: ```console\n./child-resp.json\n./wake-re.md\n./newissue.py\n```",
+      toolName: "grep_search",
+      content: "./child-resp.json\n./wake-re.md\n./newissue.py",
       isError: false,
+    });
+  });
+
+  it("parses user_input step updates into user transcript entries", () => {
+    const parser = createStdoutParser();
+    const line = JSON.stringify({
+      event: "step_update",
+      step_update: {
+        step_index: 1,
+        step_type: "user_input",
+        text: "Please list the open files",
+      },
+    });
+    const entries = parser.parseLine(line, "2026-08-20T00:00:00Z");
+
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toEqual({
+      kind: "user",
+      ts: "2026-08-20T00:00:00Z",
+      text: "Please list the open files",
     });
   });
 
@@ -128,21 +149,39 @@ describe("ui-parser", () => {
     });
   });
 
-  it("parses result events into assistant response entries", () => {
+  it("parses result events into structured result and assistant transcript entries", () => {
     const line = JSON.stringify({
       event: "result",
       result: {
         status: "SUCCESS",
         response: "All tasks completed successfully.",
+        usage: {
+          input_tokens: 15000,
+          output_tokens: 500,
+          cache_read_tokens: 10000,
+        },
+        cost_usd: 0.0045,
       },
     });
 
     const entries = parseStdoutLine(line, "2026-08-20T00:00:02Z");
-    expect(entries).toHaveLength(1);
+    expect(entries).toHaveLength(2);
     expect(entries[0]).toEqual({
       kind: "assistant",
       ts: "2026-08-20T00:00:02Z",
       text: "All tasks completed successfully.",
+    });
+    expect(entries[1]).toEqual({
+      kind: "result",
+      ts: "2026-08-20T00:00:02Z",
+      text: "All tasks completed successfully.",
+      inputTokens: 15000,
+      outputTokens: 500,
+      cachedTokens: 10000,
+      costUsd: 0.0045,
+      subtype: "success",
+      isError: false,
+      errors: [],
     });
   });
 
@@ -156,3 +195,4 @@ describe("ui-parser", () => {
     });
   });
 });
+

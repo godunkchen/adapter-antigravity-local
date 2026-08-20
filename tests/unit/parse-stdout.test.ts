@@ -47,6 +47,36 @@ describe("parseAntigravityStdoutLine", () => {
   it("parses NDJSON step_update text delta events correctly", () => {
     const ndjson = '{"event":"step_update","step_update":{"text_delta":"Hello world"}}';
     const entries = parseAntigravityStdoutLine(ndjson, ts);
-    expect(entries).toEqual([{ kind: "assistant", ts, text: "Hello world" }]);
+    expect(entries).toEqual([{ kind: "assistant", ts, text: "Hello world", delta: true }]);
+  });
+
+  /**
+   * Verifies NDJSON result events map to structured result entries.
+   */
+  it("parses NDJSON result events correctly", () => {
+    const ndjson = JSON.stringify({
+      event: "result",
+      result: {
+        status: "SUCCESS",
+        response: "Finished!",
+        usage: { input_tokens: 100, output_tokens: 20 },
+      },
+    });
+    const entries = parseAntigravityStdoutLine(ndjson, ts);
+    expect(entries).toHaveLength(2);
+    expect(entries[0]).toEqual({ kind: "assistant", ts, text: "Finished!" });
+    expect(entries[1]).toEqual({
+      kind: "result",
+      ts,
+      text: "Finished!",
+      inputTokens: 100,
+      outputTokens: 20,
+      cachedTokens: 0,
+      costUsd: 0,
+      subtype: "success",
+      isError: false,
+      errors: [],
+    });
   });
 });
+

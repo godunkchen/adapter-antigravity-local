@@ -1,3 +1,4 @@
+import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
@@ -37,6 +38,8 @@ import {
   stringifyPaperclipWakePayload,
   parseObject,
   renderTemplate,
+  renderPaperclipWakePrompt,
+  isPaperclipRecoveryWakePayload,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
 } from "@paperclipai/adapter-utils/server-utils";
 import { DEFAULT_ANTIGRAVITY_LOCAL_MODEL, SANDBOX_INSTALL_COMMAND } from "../index.js";
@@ -146,33 +149,6 @@ function buildExecutionEnvironment(
   }
 
   return { env, envConfig };
-}
-
-/**
- * Compiles the prompt template into a fully hydrated prompt payload block.
- * 
- * @param promptTemplate - The prompt template containing wildcards.
- * @param agent - The executing Paperclip Agent structure.
- * @param runId - The unique run ID sequence.
- * @param context - The global Paperclip execution context.
- * @returns The fully rendered prompt payload.
- */
-function compileAgentPrompt(
-  promptTemplate: string,
-  agent: AdapterAgent,
-  runId: string,
-  context: Record<string, unknown>
-): string {
-  const templateData = {
-    agentId: agent.id,
-    companyId: agent.companyId,
-    runId,
-    agent,
-    context,
-  };
-
-  const renderedPrompt = renderTemplate(promptTemplate, templateData);
-  return joinPromptSections([renderedPrompt]);
 }
 
 /**
@@ -512,7 +488,83 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     adapterExecutionTargetSessionMatches(runtimeRemoteExecution, runtimeExecutionTarget);
   const sessionId = canResumeSession ? runtimeSessionId : null;
 
-  const prompt = compileAgentPrompt(promptTemplate, agent, runId, context);
+  const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
+  const instructionsDir = instructionsFilePath ? `${path.dirname(instructionsFilePath)}/` : "";
+  let instructionsPrefix = "";
+  if (instructionsFilePath) {
+    try {
+      const instructionsContents = await fs.readFile(instructionsFilePath, "utf8");
+      instructionsPrefix =
+        `${instructionsContents}\n\n` +
+        `The above agent instructions were loaded from ${instructionsFilePath}. ` +
+        `Resolve any relative file references from ${instructionsDir}.\n\n`;
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      await onLog(
+        "stdout",
+        `[paperclip] Warning: could not read agent instructions file "${instructionsFilePath}": ${reason}\n`,
+      );
+    }
+  }
+
+  const commandNotes = (() => {
+    const notes: string[] = [
+      "Running Antigravity CLI in headless print mode",
+      `Effective model: "${model}"`,
+    ];
+    if (instructionsPrefix.length > 0) {
+      notes.push(
+        `Loaded agent instructions from ${instructionsFilePath}`,
+        `Prepended instructions + path directive to prompt (relative references from ${instructionsDir}).`,
+      );
+    } else if (instructionsFilePath) {
+      notes.push(
+        `Configured instructionsFilePath ${instructionsFilePath}, but file could not be read; continuing without injected instructions.`,
+      );
+    }
+    return notes;
+  })();
+
+  const bootstrapPromptTemplate = asString(config.bootstrapPromptTemplate, "");
+  const templateData = {
+    agentId: agent.id,
+    companyId: agent.companyId,
+    runId,
+    company: { id: agent.companyId },
+    agent,
+    run: { id: runId, source: "on_demand" },
+    context,
+  };
+  const renderedBootstrapPrompt =
+    !sessionId && bootstrapPromptTemplate.trim().length > 0
+      ? renderTemplate(bootstrapPromptTemplate, templateData).trim()
+      : "";
+  const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, { resumedSession: Boolean(sessionId) });
+  const shouldUseResumeDeltaPrompt = Boolean(sessionId) && wakePrompt.length > 0;
+  const renderedPrompt = shouldUseResumeDeltaPrompt || isPaperclipRecoveryWakePayload(context.paperclipWake)
+    ? ""
+    : renderTemplate(promptTemplate, templateData);
+  const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
+  const paperclipEnvNote = renderPaperclipEnvNote(env);
+  const apiAccessNote = renderApiAccessNote(env);
+  const prompt = joinPromptSections([
+    instructionsPrefix,
+    renderedBootstrapPrompt,
+    wakePrompt,
+    sessionHandoffNote,
+    paperclipEnvNote,
+    apiAccessNote,
+    renderedPrompt,
+  ]);
+  const promptMetrics = {
+    promptChars: prompt.length,
+    instructionsChars: instructionsPrefix.length,
+    bootstrapPromptChars: renderedBootstrapPrompt.length,
+    wakePromptChars: wakePrompt.length,
+    sessionHandoffChars: sessionHandoffNote.length,
+    runtimeNoteChars: paperclipEnvNote.length + apiAccessNote.length,
+    heartbeatPromptChars: renderedPrompt.length,
+  };
 
   const runAttempt = async (resumeSessionId: string | null) => {
     const workspaces = Array.isArray(context.paperclipWorkspaces) ? context.paperclipWorkspaces : [];
@@ -526,14 +578,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         adapterType: "antigravity_local",
         command: resolvedCommand,
         cwd: effectiveExecutionCwd,
-        commandNotes: [
-          "Running Antigravity CLI in headless print mode",
-          `Effective model: "${model}"`,
-        ],
+        commandNotes,
         commandArgs: args.map((val, idx) => (idx === 1 ? `<prompt ${prompt.length} chars>` : val)),
         env: loggedEnv,
         prompt,
-        promptMetrics: { promptChars: prompt.length },
+        promptMetrics,
         context,
       });
     }

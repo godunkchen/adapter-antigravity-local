@@ -64,6 +64,8 @@ export interface AntigravityRawConfigValues {
   instructionsFilePath?: string;
   /** The initial prompt execution template containing dynamic wildcards/tags. */
   promptTemplate?: string;
+  /** The bootstrap prompt execution template used only for initial run / cold start without an existing session. */
+  bootstrapPromptTemplate?: string;
   /** The AI model identifier (e.g., "gemini-3.5-flash"). */
   model?: string;
   /** The terminal command that executes the Antigravity binary. Defaults to "agy". */
@@ -97,6 +99,8 @@ export interface AntigravityAdapterConfig {
   instructionsFilePath?: string;
   /** The compiled template of the orchestrator agent prompt. */
   promptTemplate?: string;
+  /** The bootstrap prompt template used only for initial run / cold start without an existing session. */
+  bootstrapPromptTemplate?: string;
   /** The unique model identifier (e.g., "claude-sonnet-4.6-thinking" or "auto"). */
   model: string;
   /** The executable binary command. Typically resolves to "agy". */

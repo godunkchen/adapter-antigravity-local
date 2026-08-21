@@ -38,6 +38,19 @@ describe("UI build-config mapper", () => {
   });
 
   /**
+   * Scenario: Prompt templates mapping (promptTemplate and bootstrapPromptTemplate).
+   */
+  it("maps promptTemplate and bootstrapPromptTemplate properties cleanly", () => {
+    const result = buildAntigravityLocalConfig({
+      promptTemplate: "Continue with task: {{context.task}}",
+      bootstrapPromptTemplate: "Initialize session for {{agent.name}}",
+    } as any);
+
+    expect(result.promptTemplate).toBe("Continue with task: {{context.task}}");
+    expect(result.bootstrapPromptTemplate).toBe("Initialize session for {{agent.name}}");
+  });
+
+  /**
    * Scenario: Legacy plain text envVars formatting.
    * Tests multi-line KEY=VALUE resolution, skipping invalid key structures and ignores comment lines.
    */

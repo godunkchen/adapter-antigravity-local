@@ -112,6 +112,13 @@ export function buildAntigravityLocalConfig(v: CreateConfigValues): AntigravityA
   if (v.instructionsFilePath) {
     ac.instructionsFilePath = v.instructionsFilePath;
   }
+  const rawRecord = v as Record<string, unknown>;
+  if (typeof rawRecord.bootstrapPromptTemplate === "string" && rawRecord.bootstrapPromptTemplate.trim().length > 0) {
+    ac.bootstrapPromptTemplate = rawRecord.bootstrapPromptTemplate.trim();
+  }
+  if (typeof rawRecord.promptTemplate === "string" && rawRecord.promptTemplate.trim().length > 0) {
+    ac.promptTemplate = rawRecord.promptTemplate.trim();
+  }
   
   const env = parseEnvBindings(v.envBindings) as EnvBindings;
   const legacy = parseEnvVars(v.envVars);

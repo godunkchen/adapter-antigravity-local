@@ -51,8 +51,9 @@ Use when:
 
 Core fields:
 - cwd (string, optional): default absolute working directory fallback for the agent process
-- instructionsFilePath (string, optional): absolute path to a markdown instructions file
+- instructionsFilePath (string, optional): absolute path to a markdown instructions file prepended to the prompt
 - promptTemplate (string, optional): run prompt template
+- bootstrapPromptTemplate (string, optional): initial prompt template used only for cold start without an existing session
 - model (string, optional): Antigravity model id. Defaults to auto.
 - command (string, optional): defaults to "agy"
 - extraArgs (string[], optional): additional CLI args

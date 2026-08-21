@@ -433,10 +433,9 @@ describe("antigravity local execution", () => {
 
     const callArgs = runAdapterExecutionTargetProcess.mock.calls[0] as unknown as [string, unknown, string, string[]];
     const cliArgs = callArgs[3];
-    const promptIdx = cliArgs.indexOf("--print");
-    const passedPrompt = cliArgs[promptIdx + 1];
-
-    expect(passedPrompt).toBe("Do the task: Fix bug Y");
+    const passedPrompt = cliArgs[cliArgs.indexOf("--print") + 1];
+    expect(passedPrompt).toContain("Do the task: Fix bug Y");
+    expect(passedPrompt).not.toContain("The above agent instructions were loaded from");
     expect(logMessages.some((msg) => msg.includes(`could not read agent instructions file "${nonExistentPath}"`))).toBe(true);
     expect(capturedMeta.commandNotes).toContain(
       `Configured instructionsFilePath ${nonExistentPath}, but file could not be read; continuing without injected instructions.`,
@@ -563,8 +562,8 @@ describe("antigravity local execution", () => {
         issueIds: ["issue-1", "issue-2"],
         paperclipSessionHandoffMarkdown: "## Session Handoff\nProceed with unit tests.",
         paperclipWake: {
-          type: "comment",
-          comment: { id: "comment-202", body: "Please review PR #5" },
+          reason: "review_requested",
+          comments: [{ id: "comment-202", body: "Please review PR #5" }],
         },
         paperclipWorkspace: {
           cwd: "/home/user/workspace",

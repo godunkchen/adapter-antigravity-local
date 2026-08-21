@@ -33,6 +33,8 @@ import {
   joinPromptSections,
   ensurePathInEnv,
   refreshPaperclipWorkspaceEnvForExecution,
+  readPaperclipIssueWorkModeFromContext,
+  stringifyPaperclipWakePayload,
   parseObject,
   renderTemplate,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
@@ -69,6 +71,48 @@ async function resolveEffectiveCwd(
   
   await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
   return { cwd, effectiveWorkspaceCwd };
+}
+
+/**
+ * Formats a concise runtime note listing all active PAPERCLIP_* environment variables.
+ * 
+ * @param env - The merged environment mapping.
+ * @returns A formatted markdown string or empty string.
+ */
+function renderPaperclipEnvNote(env: Record<string, string>): string {
+  const paperclipKeys = Object.keys(env)
+    .filter((key) => key.startsWith("PAPERCLIP_"))
+    .sort();
+  if (paperclipKeys.length === 0) return "";
+  return [
+    "Paperclip runtime note:",
+    `The following PAPERCLIP_* environment variables are available in this run: ${paperclipKeys.join(", ")}`,
+    "Do not assume these variables are missing without checking your shell environment.",
+    "",
+    "",
+  ].join("\n");
+}
+
+/**
+ * Formats a helper note demonstrating how to query the Paperclip REST API via curl.
+ * 
+ * @param env - The merged environment mapping.
+ * @returns A formatted curl example markdown string or empty string.
+ */
+function renderApiAccessNote(env: Record<string, string>): string {
+  const apiUrl = env.PAPERCLIP_API_URL?.trim();
+  const apiKey = env.PAPERCLIP_API_KEY?.trim();
+  if (!apiUrl || !apiKey) return "";
+  return [
+    "Paperclip API access note:",
+    "Use run_command / bash with curl to make Paperclip API requests.",
+    "GET example:",
+    `  curl -s -H "Authorization: Bearer $PAPERCLIP_API_KEY" "$PAPERCLIP_API_URL/api/agents/me"`,
+    "POST/PATCH example:",
+    `  curl -s -X POST -H "Authorization: Bearer $PAPERCLIP_API_KEY" -H 'Content-Type: application/json' -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" -d '{...}' "$PAPERCLIP_API_URL/api/issues/{id}/checkout"`,
+    "",
+    "",
+  ].join("\n");
 }
 
 /**
@@ -337,6 +381,40 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   let effectiveExecutionCwd = adapterExecutionTargetRemoteCwd(executionTarget, cwd);
 
   const { env, envConfig } = buildExecutionEnvironment(runId, agent, config, model, authToken);
+
+  const wakeTaskId =
+    (typeof context.taskId === "string" && context.taskId.trim().length > 0 && context.taskId.trim()) ||
+    (typeof context.issueId === "string" && context.issueId.trim().length > 0 && context.issueId.trim()) ||
+    null;
+  const wakeReason =
+    typeof context.wakeReason === "string" && context.wakeReason.trim().length > 0
+      ? context.wakeReason.trim()
+      : null;
+  const wakeCommentId =
+    (typeof context.wakeCommentId === "string" && context.wakeCommentId.trim().length > 0 && context.wakeCommentId.trim()) ||
+    (typeof context.commentId === "string" && context.commentId.trim().length > 0 && context.commentId.trim()) ||
+    null;
+  const approvalId =
+    typeof context.approvalId === "string" && context.approvalId.trim().length > 0
+      ? context.approvalId.trim()
+      : null;
+  const approvalStatus =
+    typeof context.approvalStatus === "string" && context.approvalStatus.trim().length > 0
+      ? context.approvalStatus.trim()
+      : null;
+  const linkedIssueIds = Array.isArray(context.issueIds)
+    ? context.issueIds.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+    : [];
+  const wakePayloadJson = stringifyPaperclipWakePayload(context.paperclipWake);
+  const issueWorkMode = readPaperclipIssueWorkModeFromContext(context);
+  if (wakeTaskId) env.PAPERCLIP_TASK_ID = wakeTaskId;
+  if (issueWorkMode) env.PAPERCLIP_ISSUE_WORK_MODE = issueWorkMode;
+  if (wakeReason) env.PAPERCLIP_WAKE_REASON = wakeReason;
+  if (wakeCommentId) env.PAPERCLIP_WAKE_COMMENT_ID = wakeCommentId;
+  if (approvalId) env.PAPERCLIP_APPROVAL_ID = approvalId;
+  if (approvalStatus) env.PAPERCLIP_APPROVAL_STATUS = approvalStatus;
+  if (linkedIssueIds.length > 0) env.PAPERCLIP_LINKED_ISSUE_IDS = linkedIssueIds.join(",");
+  if (wakePayloadJson) env.PAPERCLIP_WAKE_PAYLOAD_JSON = wakePayloadJson;
 
   refreshPaperclipWorkspaceEnvForExecution({
     env,

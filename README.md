@@ -24,17 +24,20 @@ This adapter acts as a drop-in, robust, and type-safe replacement for the deprec
 
 ## 🤖 Supported Models
 
-Models are routed dynamically via the `ANTIGRAVITY_MODEL` environment variable (rather than invalid CLI flags).
+Models are passed directly to the `agy` CLI via `--model` and optionally `--effort`. The adapter also supports dynamic model discovery via `agy models` with automatic TTL caching and fallback.
 
-| Model Family | Supported Profiles & Identifiers |
-|---|---|
-| **Gemini 3.5 Flash** | `gemini-3.5-flash` |
-| **Gemini 3.1 Pro** | `gemini-3.1-pro-high`, `gemini-3.1-pro-low` |
-| **Claude Sonnet 4.6** | `claude-sonnet-4.6-thinking`, `claude-sonnet-4.6-standard` |
-| **Claude Opus 4.6** | `claude-opus-4.6-thinking` |
-| **GPT-OSS 120B** | `gpt-oss-120b-medium` |
+| Model Family | Model Identifiers | Label / Description |
+|---|---|---|
+| **Gemini 3.7 Flash** | `gemini-3.7-flash-high`, `gemini-3.7-flash-medium`, `gemini-3.7-flash-low` | Gemini 3.7 Flash with variable reasoning effort |
+| **Gemini 3.6 Flash** | `gemini-3.6-flash-high`, `gemini-3.6-flash-medium`, `gemini-3.6-flash-low` | Gemini 3.6 Flash with variable reasoning effort |
+| **Gemini 3.5 Flash** | `gemini-3.5-flash-high`, `gemini-3.5-flash-medium`, `gemini-3.5-flash-low` | Gemini 3.5 Flash (default for cheap profile) |
+| **Gemini 3.1 Pro** | `gemini-3.1-pro-high`, `gemini-3.1-pro-low` | Gemini 3.1 Pro with High / Low effort |
+| **Claude Sonnet 4.6** | `claude-sonnet-4-6` *(alias: `claude-sonnet-4.6-thinking`)* | Claude Sonnet 4.6 (Thinking) |
+| **Claude Opus 4.6** | `claude-opus-4-6-thinking` | Claude Opus 4.6 (Thinking) |
+| **GPT-OSS 120B** | `gpt-oss-120b-medium` *(alias: `gpt-oss-120b`)* | GPT-OSS 120B (Medium) |
+| **Auto** | `auto` | Global default routed automatically by Antigravity |
 
-> *Note: Model availability depends on your local Antigravity installation and configuration.*
+> *Note: Model availability depends on your local Antigravity installation and `agy models` discovery.*
 
 ---
 

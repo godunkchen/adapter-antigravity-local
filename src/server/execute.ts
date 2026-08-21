@@ -152,9 +152,12 @@ export interface AgyModelResolution {
  * Resolves Paperclip model selections to exact agy CLI model flags and reasoning effort settings.
  *
  * Rules:
- * 1. Claude models map to exact agy CLI identifiers and DO NOT accept --effort.
- * 2. Gemini & GPT models accept exact model IDs and REQUIRE --effort (low | medium | high).
- * 3. "auto" returns empty object to allow agy native auto-routing defaults.
+ * 1. Flat model IDs (e.g. gemini-3.7-flash-high, claude-sonnet-4-6, gpt-oss-120b-medium) are supported directly.
+ *    If an external thinkingEffort is supplied that conflicts with a composite model's effort suffix,
+ *    the suffix is adapted accordingly.
+ * 2. Claude models map to exact agy CLI identifiers (e.g. claude-sonnet-4-6) and DO NOT accept --effort.
+ * 3. Base model IDs (e.g. gemini-3.7-flash, gemini-3.5-flash) accept explicit or default --effort.
+ * 4. "auto" returns empty object or { effort: userEffort } to allow agy native auto-routing defaults.
  */
 export function resolveAgyModelAndEffort(rawModel?: string, rawEffort?: string): AgyModelResolution {
   const modelStr = (rawModel || "").trim();
@@ -176,43 +179,77 @@ export function resolveAgyModelAndEffort(rawModel?: string, rawEffort?: string):
   const lower = modelStr.toLowerCase();
 
   // 1. Claude models -> exact agy CLI model identifier (DO NOT accept --effort)
-  if (lower.includes("sonnet") || lower === "smart") {
-    return { model: "Claude Sonnet 4.6 (Thinking)" };
+  if (lower === "claude-sonnet-4-6" || lower === "claude-sonnet-4.6-thinking" || lower.includes("sonnet") || lower === "smart") {
+    return { model: "claude-sonnet-4-6" };
   }
-  if (lower.includes("opus")) {
-    return { model: "Claude Opus 4.6 (Thinking)" };
-  }
-
-  // 2. Gemini 3.5 Flash -> cheap / fast / flash (REQUIRES --effort)
-  if (lower === "cheap" || lower === "fast" || lower.includes("gemini-3.5-flash")) {
-    return {
-      model: "gemini-3.5-flash",
-      effort: userEffort || "medium",
-    };
+  if (lower === "claude-opus-4-6-thinking" || lower.includes("opus")) {
+    return { model: "claude-opus-4-6-thinking" };
   }
 
-  // 3. Gemini 3.6 Flash
-  if (lower.includes("gemini-3.6-flash")) {
-    return {
-      model: "gemini-3.6-flash",
-      effort: userEffort || "high",
-    };
-  }
-
-  // 4. Gemini 3.1 Pro
-  if (lower.includes("gemini-3.1-pro")) {
-    return {
-      model: "gemini-3.1-pro",
-      effort: userEffort || "high",
-    };
-  }
-
-  // 5. GPT-OSS 120B
+  // 2. GPT-OSS 120B
   if (lower.includes("gpt-oss-120b")) {
-    return {
-      model: "gpt-oss-120b",
-      effort: userEffort || "medium",
-    };
+    if (lower === "gpt-oss-120b-medium" && !userEffort) {
+      return { model: "gpt-oss-120b-medium" };
+    }
+    if (userEffort) {
+      return { model: "gpt-oss-120b", effort: userEffort };
+    }
+    return { model: "gpt-oss-120b-medium" };
+  }
+
+  // 3. Gemini 3.7 Flash
+  if (lower.includes("gemini-3.7-flash") || lower.includes("gemini-3.7")) {
+    if (!userEffort) {
+      if (lower.includes("-high")) return { model: "gemini-3.7-flash-high" };
+      if (lower.includes("-medium")) return { model: "gemini-3.7-flash-medium" };
+      if (lower.includes("-low")) return { model: "gemini-3.7-flash-low" };
+      return { model: "gemini-3.7-flash", effort: "high" };
+    }
+    if (lower === "gemini-3.7-flash") {
+      return { model: "gemini-3.7-flash", effort: userEffort };
+    }
+    return { model: `gemini-3.7-flash-${userEffort}` };
+  }
+
+  // 4. Gemini 3.6 Flash
+  if (lower.includes("gemini-3.6-flash") || lower.includes("gemini-3.6")) {
+    if (!userEffort) {
+      if (lower.includes("-high")) return { model: "gemini-3.6-flash-high" };
+      if (lower.includes("-medium")) return { model: "gemini-3.6-flash-medium" };
+      if (lower.includes("-low")) return { model: "gemini-3.6-flash-low" };
+      return { model: "gemini-3.6-flash", effort: "high" };
+    }
+    if (lower === "gemini-3.6-flash") {
+      return { model: "gemini-3.6-flash", effort: userEffort };
+    }
+    return { model: `gemini-3.6-flash-${userEffort}` };
+  }
+
+  // 5. Gemini 3.5 Flash -> cheap / fast / flash
+  if (lower === "cheap" || lower === "fast" || lower.includes("gemini-3.5-flash") || lower.includes("gemini-3.5")) {
+    if (!userEffort) {
+      if (lower.includes("-high")) return { model: "gemini-3.5-flash-high" };
+      if (lower.includes("-medium")) return { model: "gemini-3.5-flash-medium" };
+      if (lower.includes("-low")) return { model: "gemini-3.5-flash-low" };
+      return { model: "gemini-3.5-flash", effort: "medium" };
+    }
+    if (lower === "gemini-3.5-flash") {
+      return { model: "gemini-3.5-flash", effort: userEffort };
+    }
+    return { model: `gemini-3.5-flash-${userEffort}` };
+  }
+
+  // 6. Gemini 3.1 Pro
+  if (lower.includes("gemini-3.1-pro") || lower.includes("gemini-3.1")) {
+    if (!userEffort) {
+      if (lower.includes("-low")) return { model: "gemini-3.1-pro-low" };
+      if (lower.includes("-high")) return { model: "gemini-3.1-pro-high" };
+      return { model: "gemini-3.1-pro", effort: "high" };
+    }
+    if (lower === "gemini-3.1-pro") {
+      return { model: "gemini-3.1-pro", effort: userEffort };
+    }
+    return { model: `gemini-3.1-pro-${userEffort === "low" ? "low" : "high"}` };
   }
 
   // Fallback: Custom model string passed by user

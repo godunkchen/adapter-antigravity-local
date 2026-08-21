@@ -133,8 +133,44 @@ describe("antigravity local execution", () => {
 
     const modelIdx = cliArgs.indexOf("--model");
     expect(modelIdx).toBeGreaterThan(-1);
-    expect(cliArgs[modelIdx + 1]).toBe("Claude Sonnet 4.6 (Thinking)");
+    expect(cliArgs[modelIdx + 1]).toBe("claude-sonnet-4-6");
     expect(options.env.ANTIGRAVITY_MODEL).toBe("claude-sonnet-4.6-thinking");
+  });
+
+  it("configures latest flat Gemini 3.7 model directly without effort flag conflict", async () => {
+    await execute({
+      runId: "run-local-gemini37",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Antigravity CEO",
+        adapterType: "antigravity_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: {
+        model: "gemini-3.7-flash-high",
+      },
+      context: {
+        paperclipWorkspace: {
+          cwd: "/home/user/workspace",
+        },
+      },
+      onLog: async () => {},
+    });
+
+    const callArgs = runAdapterExecutionTargetProcess.mock.calls[0] as unknown as [string, unknown, string, string[], { env: Record<string, string> }];
+    const cliArgs = callArgs[3];
+
+    const modelIdx = cliArgs.indexOf("--model");
+    expect(modelIdx).toBeGreaterThan(-1);
+    expect(cliArgs[modelIdx + 1]).toBe("gemini-3.7-flash-high");
+    expect(cliArgs.indexOf("--effort")).toBe(-1);
   });
 
   it("configures thinkingEffort and timeoutSec via CLI flags", async () => {

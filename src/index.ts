@@ -1,5 +1,5 @@
 import { type ServerAdapterModule } from "@paperclipai/adapter-utils";
-import { execute, testEnvironment } from "./server/index.js";
+import { execute, testEnvironment, listModels, refreshModels } from "./server/index.js";
 import type { AntigravityModelDefinition, AntigravityModelProfileDefinition } from "./types.js";
 
 export const type = "antigravity_local";
@@ -12,12 +12,20 @@ export const DEFAULT_ANTIGRAVITY_LOCAL_MODEL = "auto";
 
 export const models: AntigravityModelDefinition[] = [
   { id: DEFAULT_ANTIGRAVITY_LOCAL_MODEL, label: "Auto (Use global configured default)" },
-  { id: "gemini-3.5-flash", label: "Gemini 3.5 Flash (Medium Effort)" },
-  { id: "gemini-3.6-flash", label: "Gemini 3.6 Flash (High Effort)" },
-  { id: "gemini-3.1-pro", label: "Gemini 3.1 Pro (High Effort)" },
-  { id: "claude-sonnet-4.6-thinking", label: "Claude Sonnet 4.6 (Thinking)" },
-  { id: "claude-opus-4.6-thinking", label: "Claude Opus 4.6 (Thinking)" },
-  { id: "gpt-oss-120b", label: "GPT-OSS 120B (Medium Effort)" },
+  { id: "gemini-3.7-flash-high", label: "Gemini 3.7 Flash (High)" },
+  { id: "gemini-3.7-flash-medium", label: "Gemini 3.7 Flash (Medium)" },
+  { id: "gemini-3.7-flash-low", label: "Gemini 3.7 Flash (Low)" },
+  { id: "gemini-3.6-flash-high", label: "Gemini 3.6 Flash (High)" },
+  { id: "gemini-3.6-flash-medium", label: "Gemini 3.6 Flash (Medium)" },
+  { id: "gemini-3.6-flash-low", label: "Gemini 3.6 Flash (Low)" },
+  { id: "gemini-3.5-flash-high", label: "Gemini 3.5 Flash (High)" },
+  { id: "gemini-3.5-flash-medium", label: "Gemini 3.5 Flash (Medium)" },
+  { id: "gemini-3.5-flash-low", label: "Gemini 3.5 Flash (Low)" },
+  { id: "gemini-3.1-pro-high", label: "Gemini 3.1 Pro (High)" },
+  { id: "gemini-3.1-pro-low", label: "Gemini 3.1 Pro (Low)" },
+  { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6 (Thinking)" },
+  { id: "claude-opus-4-6-thinking", label: "Claude Opus 4.6 (Thinking)" },
+  { id: "gpt-oss-120b-medium", label: "GPT-OSS 120B (Medium)" },
 ];
 
 export const modelProfiles: AntigravityModelProfileDefinition[] = [
@@ -26,7 +34,7 @@ export const modelProfiles: AntigravityModelProfileDefinition[] = [
     label: "Cheap",
     description: "Use Gemini 3.5 Flash for faster, cost-effective routing.",
     adapterConfig: {
-      model: "gemini-3.5-flash",
+      model: "gemini-3.5-flash-medium",
     },
     source: "adapter_default",
   },
@@ -65,6 +73,8 @@ export function createServerAdapter(): ServerAdapterModule {
     execute,
     testEnvironment,
     models,
+    listModels,
+    refreshModels,
     modelProfiles,
     supportsInstructionsBundle: true,
     instructionsPathKey: "instructionsFilePath",

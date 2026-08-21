@@ -9,6 +9,14 @@
 export { execute } from "./execute.js";
 export { listAntigravitySkills, syncAntigravitySkills } from "./skills.js";
 export { testEnvironment } from "./test.js";
+export {
+  listModels,
+  refreshModels,
+  parseAgyModelsOutput,
+  loadAntigravityModels,
+  dedupeModels,
+  resetAntigravityModelsCacheForTests,
+} from "./models.js";
 
 import type { AdapterSessionCodec } from "@paperclipai/adapter-utils";
 import type { AntigravitySessionParams } from "../types.js";

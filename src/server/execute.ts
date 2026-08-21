@@ -227,6 +227,9 @@ export function resolveAgyModelAndEffort(rawModel?: string, rawEffort?: string):
 
   // 5. Gemini 3.5 Flash -> cheap / fast / flash
   if (lower === "cheap" || lower === "fast" || lower.includes("gemini-3.5-flash") || lower.includes("gemini-3.5")) {
+    if (lower === "cheap" || lower === "fast") {
+      return { model: `gemini-3.5-flash-${userEffort || "medium"}` };
+    }
     if (!userEffort) {
       if (lower.includes("-high")) return { model: "gemini-3.5-flash-high" };
       if (lower.includes("-medium")) return { model: "gemini-3.5-flash-medium" };

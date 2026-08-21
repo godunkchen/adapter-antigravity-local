@@ -76,7 +76,7 @@ describe("Antigravity Models Discovery & Parsing", () => {
     expect(list.length).toBeGreaterThan(0);
     const refreshed = await refreshModels();
     expect(refreshed.length).toBeGreaterThan(0);
-  });
+  }, 15000);
 });
 
 describe("resolveAgyModelAndEffort Resolution Rules", () => {

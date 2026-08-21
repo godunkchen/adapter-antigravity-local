@@ -1,12 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest";
-import {
-  dedupeModels,
-  parseAgyModelsOutput,
-  loadAntigravityModels,
-  listModels,
-  refreshModels,
-  resetAntigravityModelsCacheForTests,
-} from "../../src/server/models.js";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { resolveAgyModelAndEffort } from "../../src/server/execute.js";
 import { models as STATIC_MODELS, DEFAULT_ANTIGRAVITY_LOCAL_MODEL } from "../../src/index.js";
 
@@ -28,9 +20,34 @@ claude-opus-4-6-thinking\tClaude Opus 4.6 (Thinking)
 gpt-oss-120b-medium\tGPT-OSS 120B (Medium)
 `;
 
+const { mockExecFile } = vi.hoisted(() => ({
+  mockExecFile: vi.fn((cmd: string, args: unknown, opts: unknown, callback?: unknown) => {
+    const cb = (typeof opts === "function" ? opts : callback) as (err: Error | null, res?: { stdout: string; stderr: string }) => void;
+    if (cmd === "non_existent_agy_binary") {
+      cb(new Error("Command failed: ENOENT"), { stdout: "", stderr: "command not found" });
+    } else {
+      cb(null, { stdout: SAMPLE_AGY_MODELS_OUTPUT, stderr: "" });
+    }
+  }),
+}));
+
+vi.mock("node:child_process", () => ({
+  execFile: mockExecFile,
+}));
+
+import {
+  dedupeModels,
+  parseAgyModelsOutput,
+  loadAntigravityModels,
+  listModels,
+  refreshModels,
+  resetAntigravityModelsCacheForTests,
+} from "../../src/server/models.js";
+
 describe("Antigravity Models Discovery & Parsing", () => {
   beforeEach(() => {
     resetAntigravityModelsCacheForTests();
+    mockExecFile.mockClear();
   });
 
   it("parses agy models output into structured model definitions", () => {
@@ -73,10 +90,14 @@ describe("Antigravity Models Discovery & Parsing", () => {
 
   it("exports listModels and refreshModels", async () => {
     const list = await listModels();
-    expect(list.length).toBeGreaterThan(0);
+    expect(list.length).toBe(15);
+    expect(list[0].id).toBe(DEFAULT_ANTIGRAVITY_LOCAL_MODEL);
+    expect(list[1].id).toBe("gemini-3.7-flash-high");
+
     const refreshed = await refreshModels();
-    expect(refreshed.length).toBeGreaterThan(0);
-  }, 15000);
+    expect(refreshed.length).toBe(15);
+    expect(refreshed[0].id).toBe(DEFAULT_ANTIGRAVITY_LOCAL_MODEL);
+  });
 });
 
 describe("resolveAgyModelAndEffort Resolution Rules", () => {

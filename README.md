@@ -72,6 +72,9 @@ When configuring a Paperclip Agent, define the following variables in the settin
 | --- | --- | --- | --- |
 | `command` | `string` | Binary command executable path or system command name. | `"agy"` |
 | `model` | `string` | Target model profile or custom model name (binds to env). | `"claude-sonnet-4.6-thinking"` |
+| `instructionsFilePath` | `string` | Absolute path to markdown instructions file prepended to prompt. | `""` |
+| `promptTemplate` | `string` | Standard run prompt execution template with dynamic variable substitution. | `""` |
+| `bootstrapPromptTemplate` | `string` | Cold-start initial prompt template used only without existing session. | `""` |
 | `sandbox` | `boolean` | Enforces strict OS/Terminal sandbox jail isolation. | `false` |
 | `cwd` | `string` | Absolute working directory context path fallback. | `process.cwd()` |
 | `timeoutSec` | `number` | Inactivity/run timeout duration in seconds. | `0` (Disabled) |

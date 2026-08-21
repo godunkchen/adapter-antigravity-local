@@ -112,7 +112,7 @@ export function buildAntigravityLocalConfig(v: CreateConfigValues): AntigravityA
   if (v.instructionsFilePath) {
     ac.instructionsFilePath = v.instructionsFilePath;
   }
-  const rawRecord = v as Record<string, unknown>;
+  const rawRecord = v as unknown as Record<string, unknown>;
   if (typeof rawRecord.bootstrapPromptTemplate === "string" && rawRecord.bootstrapPromptTemplate.trim().length > 0) {
     ac.bootstrapPromptTemplate = rawRecord.bootstrapPromptTemplate.trim();
   }

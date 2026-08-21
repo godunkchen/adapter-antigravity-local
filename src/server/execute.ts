@@ -39,7 +39,6 @@ import {
   parseObject,
   renderTemplate,
   renderPaperclipWakePrompt,
-  isPaperclipRecoveryWakePayload,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
 } from "@paperclipai/adapter-utils/server-utils";
 import { DEFAULT_ANTIGRAVITY_LOCAL_MODEL, SANDBOX_INSTALL_COMMAND } from "../index.js";
@@ -322,6 +321,12 @@ function compileAgyArguments(
   return args;
 }
 
+function isRecoveryWakePayload(value: unknown): boolean {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const rec = value as Record<string, unknown>;
+  return Boolean(rec.recovery || rec.reason === "source_scoped_recovery_action");
+}
+
 /**
  * Core execution engine function for Google Antigravity local CLI integrations.
  * Decomposes process preparation, remote SSH workspace syncs, Paperclip bridge handshakes, 
@@ -541,7 +546,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       : "";
   const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, { resumedSession: Boolean(sessionId) });
   const shouldUseResumeDeltaPrompt = Boolean(sessionId) && wakePrompt.length > 0;
-  const renderedPrompt = shouldUseResumeDeltaPrompt || isPaperclipRecoveryWakePayload(context.paperclipWake)
+  const renderedPrompt = shouldUseResumeDeltaPrompt || isRecoveryWakePayload(context.paperclipWake)
     ? ""
     : renderTemplate(promptTemplate, templateData);
   const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();

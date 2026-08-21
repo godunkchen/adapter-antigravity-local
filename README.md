@@ -83,7 +83,9 @@ When configuring a Paperclip Agent, define the following variables in the settin
 
 ## 🛠️ Development
 
-To work on modifications locally, clone the repository and build the distribution assets:
+For in-depth architectural design, model lifecycle rules, and dynamic discovery guidelines, see the **[Developer Guide](./DEVELOPER_GUIDE.md)**.
+
+To work on modifications, clone the repository and build the distribution assets:
 
 ```bash
 # Clone and enter the repository
@@ -105,7 +107,7 @@ npm run typecheck
 
 ## 🧪 Architecture Quality & Testing (TDD)
 
-We maintain a senior-grade quality gate enforced by **62 unit & integration tests** running on **Vitest**. The test suite is isolated from production compilation bundles.
+We maintain a senior-grade quality gate enforced by **93 unit & integration tests** running on **Vitest**. The test suite is isolated from production compilation bundles.
 
 Execute the Test Suite:
 
@@ -114,7 +116,7 @@ npm test
 
 ```
 
-*Runs 62 tests across CLI color event formatters, UI config builders, session serializers, skills symlink managers, and environment probes in less than `0.6s`.*
+*Runs 93 tests across model resolution engines, dynamic CLI parsers, CLI color event formatters, UI config builders, session serializers, skills symlink managers, and environment probes.*
 
 ---
 

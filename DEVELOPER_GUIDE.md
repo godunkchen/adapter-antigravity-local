@@ -54,6 +54,7 @@ Paperclip interacts with the adapter through the `ServerAdapterModule` interface
 | `syncSkills(ctx, skills)` | Skill synchronization hook | Creates/prunes persistent symlinks to Paperclip company catalog skills. |
 | `supportsInstructionsBundle` | Managed instructions capability flag | Enables Paperclip instructions bundle generation and Web UI editor. |
 | `requiresMaterializedRuntimeSkills` | Skill materialization flag | Instructs Paperclip to synchronize skills on disk prior to run. |
+| `supportsLocalAgentJwt` | Local Agent JWT capability flag | Enables Paperclip Server to mint and inject signed `PAPERCLIP_API_KEY` JWT tokens for REST API access. |
 
 ### Canonical Prompt Handling Pipeline (v2.x)
 

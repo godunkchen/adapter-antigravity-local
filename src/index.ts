@@ -67,6 +67,7 @@ Operational fields:
 Notes:
 - Runs use positional prompt arguments.
 - Authentication utilizes the native OS keyring or ANTIGRAVITY_API_KEY environment variable.
+- Supports local agent JWT minting; Paperclip Server automatically injects PAPERCLIP_API_KEY for agent API access.
 `;
 
 export function createServerAdapter(): ServerAdapterModule {
@@ -83,6 +84,7 @@ export function createServerAdapter(): ServerAdapterModule {
     supportsInstructionsBundle: true,
     instructionsPathKey: "instructionsFilePath",
     requiresMaterializedRuntimeSkills: true,
+    supportsLocalAgentJwt: true,
     agentConfigurationDoc,
   };
 }

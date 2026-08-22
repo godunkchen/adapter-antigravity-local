@@ -154,4 +154,24 @@ describe("UI build-config mapper", () => {
 
     expect(result.extraArgs).toEqual(["--verbose", "--debug", "--model-fallback=none"]);
   });
+
+  /**
+   * Scenario: Server adapter capability contract exports.
+   */
+  it("exports complete ServerAdapterModule capabilities including supportsLocalAgentJwt", async () => {
+    const { createServerAdapter, type, label } = await import("../../src/index.js");
+    const adapter = createServerAdapter();
+
+    expect(type).toBe("antigravity_local");
+    expect(label).toBe("Antigravity CLI (local)");
+    expect(adapter.type).toBe("antigravity_local");
+    expect(adapter.supportsLocalAgentJwt).toBe(true);
+    expect(adapter.supportsInstructionsBundle).toBe(true);
+    expect(adapter.instructionsPathKey).toBe("instructionsFilePath");
+    expect(adapter.requiresMaterializedRuntimeSkills).toBe(true);
+    expect(typeof adapter.listSkills).toBe("function");
+    expect(typeof adapter.syncSkills).toBe("function");
+    expect(typeof adapter.execute).toBe("function");
+    expect(typeof adapter.testEnvironment).toBe("function");
+  });
 });

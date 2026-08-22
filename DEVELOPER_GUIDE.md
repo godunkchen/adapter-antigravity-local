@@ -50,7 +50,10 @@ Paperclip interacts with the adapter through the `ServerAdapterModule` interface
 | `modelProfiles` | Pre-configured cost/tier lanes | Defines default assignments for standard profiles (e.g. `cheap`). |
 | `execute(ctx)` | Main agent heartbeat execution | Compiles prompt, workspace bindings, model, and effort into CLI flags. |
 | `testEnvironment(ctx)` | Diagnostic self-test probe | Validates command path, permissions, model flags, and API keys. |
+| `listSkills(ctx)` | Skill discovery hook | Lists available and linked Paperclip skills in `~/.gemini/skills`. |
+| `syncSkills(ctx, skills)` | Skill synchronization hook | Creates/prunes persistent symlinks to Paperclip company catalog skills. |
 | `supportsInstructionsBundle` | Managed instructions capability flag | Enables Paperclip instructions bundle generation and Web UI editor. |
+| `requiresMaterializedRuntimeSkills` | Skill materialization flag | Instructs Paperclip to synchronize skills on disk prior to run. |
 
 ### Canonical Prompt Handling Pipeline (v2.x)
 
@@ -59,20 +62,22 @@ Paperclip interacts with the adapter through the `ServerAdapterModule` interface
 │                       Canonical Paperclip Prompt Pipeline                   │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │ 1. Instructions Bundle: Read config.instructionsFilePath + path directive   │
-│ 2. Bootstrap Prompt:    renderTemplate(bootstrapPromptTemplate) [cold only] │
-│ 3. Wake Prompt:         renderPaperclipWakePrompt(paperclipWake, {resumed}) │
-│ 4. Session Handoff:     context.paperclipSessionHandoffMarkdown             │
-│ 5. Runtime Env Note:    PAPERCLIP_* env keys summary + API curl guide       │
-│ 6. Heartbeat Prompt:    renderTemplate(promptTemplate) [skipped on delta]   │
-│ 7. Assembly:            joinPromptSections([...])                           │
-│ 8. Telemetry:           Granular promptMetrics breakdown emitted to onMeta  │
+│ 2. Runtime Skills Note: Materialized skill root + selected skills directive │
+│ 3. Bootstrap Prompt:    renderTemplate(bootstrapPromptTemplate) [cold only] │
+│ 4. Wake Prompt:         renderPaperclipWakePrompt(paperclipWake, {resumed}) │
+│ 5. Session Handoff:     context.paperclipSessionHandoffMarkdown             │
+│ 6. Runtime Env Note:    PAPERCLIP_* env keys summary + API curl guide       │
+│ 7. Heartbeat Prompt:    renderTemplate(promptTemplate) [skipped on delta]   │
+│ 8. Assembly:            joinPromptSections([...])                           │
+│ 9. Telemetry:           Granular promptMetrics (incl. skillsChars) in onMeta│
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
 1. **Instructions Bundle Loading**: Asynchronously loads markdown system instructions from `config.instructionsFilePath` and appends relative path directives (`Resolve any relative file references from <dir>/`).
-2. **Cold Start vs. Resumed Session**: Renders `bootstrapPromptTemplate` only on initial turns (`!sessionId`). On resumed sessions, delivers event-driven `renderPaperclipWakePrompt` delta prompts and suppresses redundant heartbeat instructions.
-3. **Runtime & API Notes**: Formats active `PAPERCLIP_*` environment keys and Paperclip REST API curl guides.
-4. **Assembly**: Combines sections using `@paperclipai/adapter-utils` `joinPromptSections` and calculates granular `promptMetrics`.
+2. **Runtime Skills Integration**: Selected Paperclip catalog skills are materialized as symlinks into `~/.gemini/skills` and mounted to `agy` via `--add-dir`. An explicit root directive pointer (`Paperclip has materialized selected runtime skills...`) is injected into the prompt.
+3. **Cold Start vs. Resumed Session**: Renders `bootstrapPromptTemplate` only on initial turns (`!sessionId`). On resumed sessions, delivers event-driven `renderPaperclipWakePrompt` delta prompts and suppresses redundant heartbeat instructions.
+4. **Runtime & API Notes**: Formats active `PAPERCLIP_*` environment keys and Paperclip REST API curl guides.
+5. **Assembly**: Combines sections using `@paperclipai/adapter-utils` `joinPromptSections` and calculates granular `promptMetrics` (`promptChars`, `instructionsChars`, `skillsChars`, `bootstrapPromptChars`, `wakePromptChars`, `sessionHandoffChars`, `runtimeNoteChars`, `heartbeatPromptChars`).
 
 ---
 

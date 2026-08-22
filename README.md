@@ -17,6 +17,7 @@ This adapter acts as a drop-in, robust, and type-safe replacement for the deprec
 - **📂 Multi-Workspace Sync**: Automatically registers and mounts multiple active Paperclip workspaces into `agy` using repeatable `--add-dir <cwd>` arguments.
 - **⚙️ Headless Resiliency**: Enforces unattended command executions with `--dangerously-skip-permissions` to bypass OS prompt gates in headless containers.
 - **🔒 Isolated Sandboxing**: Enforces strict execution limits and file-system restrictions by appending the `--sandbox` parameter.
+- **🧠 Paperclip Skills Materialization**: Automatically materializes configured company catalog skills into `~/.gemini/skills`, passes them via `--add-dir`, and injects canonical runtime skills directives into the prompt.
 - **🛠️ Self-Testing Diagnostics**: Bundles the `testEnvironment` probe checking command availability, workspace permissions, environment variables, and live API credentials via an active "hello" telemetry probe.
 - **🛡️ Edge Case Mitigation**: Built-in regex parsers resistant to irregular spacing, multiline empty logs, case-insensitive outputs, and rate limits (HTTP 429).
 

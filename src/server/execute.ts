@@ -35,12 +35,18 @@ import {
   ensurePathInEnv,
   refreshPaperclipWorkspaceEnvForExecution,
   readPaperclipIssueWorkModeFromContext,
+  readPaperclipRuntimeSkillEntries,
   stringifyPaperclipWakePayload,
   parseObject,
   renderTemplate,
   renderPaperclipWakePrompt,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
 } from "@paperclipai/adapter-utils/server-utils";
+import {
+  resolveAntigravitySkillsHome,
+  ensureAntigravitySkillsInjected,
+  resolveAntigravityDesiredSkillNames,
+} from "./skills.js";
 import { DEFAULT_ANTIGRAVITY_LOCAL_MODEL, SANDBOX_INSTALL_COMMAND } from "../index.js";
 import {
   extractAntigravityExecutionMetrics,
@@ -512,11 +518,40 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
   }
 
+  const antigravitySkillEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
+  const desiredAntigravitySkillNames = resolveAntigravityDesiredSkillNames(config, antigravitySkillEntries);
+  const desiredSkillSet = new Set(desiredAntigravitySkillNames);
+  const selectedSkillEntries = antigravitySkillEntries.filter((entry) => desiredSkillSet.has(entry.key));
+  const selectedSkillNames = selectedSkillEntries.map((entry) => entry.runtimeName).sort();
+
+  let skillsHome: string | null = null;
+  if (!executionTargetIsRemote && selectedSkillEntries.length > 0) {
+    skillsHome = resolveAntigravitySkillsHome(config);
+    await ensureAntigravitySkillsInjected(onLog, antigravitySkillEntries, desiredAntigravitySkillNames, skillsHome);
+  }
+
+  const runtimeSkillsNote =
+    selectedSkillEntries.length > 0 && skillsHome
+      ? [
+          "Paperclip has materialized selected runtime skills for this Antigravity session.",
+          `Skill root: ${skillsHome}`,
+          selectedSkillNames.length > 0 ? `Selected skills: ${selectedSkillNames.join(", ")}` : "",
+          "When a task calls for one of these skills, read its SKILL.md from that root and follow it.",
+          "",
+          "",
+        ].filter(Boolean).join("\n")
+      : "";
+
   const commandNotes = (() => {
     const notes: string[] = [
       "Running Antigravity CLI in headless print mode",
       `Effective model: "${model}"`,
     ];
+    if (selectedSkillEntries.length > 0 && skillsHome) {
+      notes.push(
+        `Materialized ${selectedSkillEntries.length} Paperclip skill(s) for Antigravity at ${skillsHome}.`,
+      );
+    }
     if (instructionsPrefix.length > 0) {
       notes.push(
         `Loaded agent instructions from ${instructionsFilePath}`,
@@ -554,6 +589,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const apiAccessNote = renderApiAccessNote(env);
   const prompt = joinPromptSections([
     instructionsPrefix,
+    runtimeSkillsNote,
     renderedBootstrapPrompt,
     wakePrompt,
     sessionHandoffNote,
@@ -564,6 +600,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const promptMetrics = {
     promptChars: prompt.length,
     instructionsChars: instructionsPrefix.length,
+    skillsChars: runtimeSkillsNote.length,
     bootstrapPromptChars: renderedBootstrapPrompt.length,
     wakePromptChars: wakePrompt.length,
     sessionHandoffChars: sessionHandoffNote.length,
@@ -572,7 +609,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   };
 
   const runAttempt = async (resumeSessionId: string | null) => {
-    const workspaces = Array.isArray(context.paperclipWorkspaces) ? context.paperclipWorkspaces : [];
+    const rawWorkspaces = Array.isArray(context.paperclipWorkspaces) ? context.paperclipWorkspaces : [];
+    const workspaces = [...rawWorkspaces];
+    if (skillsHome && selectedSkillEntries.length > 0) {
+      const alreadyIncluded = workspaces.some(
+        (ws) => typeof ws === "object" && ws !== null && (ws as any).cwd === skillsHome,
+      );
+      if (!alreadyIncluded) {
+        workspaces.push({ cwd: skillsHome });
+      }
+    }
     const args = compileAgyArguments(prompt, resumeSessionId, workspaces, sandbox, extraArgs, model, rawEffort, configuredTimeoutSec);
     
     console.log(`[antigravity] Executing agy CLI: ${command} ${args.join(" ")}`);

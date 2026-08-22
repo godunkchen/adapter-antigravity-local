@@ -1,5 +1,6 @@
 import { type ServerAdapterModule } from "@paperclipai/adapter-utils";
 import { execute, testEnvironment, listModels, refreshModels } from "./server/index.js";
+import { listAntigravitySkills, syncAntigravitySkills } from "./server/skills.js";
 import type { AntigravityModelDefinition, AntigravityModelProfileDefinition } from "./types.js";
 
 export const type = "antigravity_local";
@@ -77,8 +78,11 @@ export function createServerAdapter(): ServerAdapterModule {
     listModels,
     refreshModels,
     modelProfiles,
+    listSkills: listAntigravitySkills,
+    syncSkills: syncAntigravitySkills,
     supportsInstructionsBundle: true,
     instructionsPathKey: "instructionsFilePath",
+    requiresMaterializedRuntimeSkills: true,
     agentConfigurationDoc,
   };
 }

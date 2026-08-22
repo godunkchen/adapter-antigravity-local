@@ -61,8 +61,8 @@ Paperclip interacts with the adapter through the `ServerAdapterModule` interface
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                       Canonical Paperclip Prompt Pipeline                   │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│ 1. Instructions Bundle: Read config.instructionsFilePath + path directive   │
-│ 2. Runtime Skills Note: Materialized skill root + selected skills directive │
+│ 1. Runtime Skills Note: Materialized skill root + selected skills directive │
+│ 2. Instructions Bundle: Read config.instructionsFilePath + path directive   │
 │ 3. Bootstrap Prompt:    renderTemplate(bootstrapPromptTemplate) [cold only] │
 │ 4. Wake Prompt:         renderPaperclipWakePrompt(paperclipWake, {resumed}) │
 │ 5. Session Handoff:     context.paperclipSessionHandoffMarkdown             │
@@ -73,8 +73,8 @@ Paperclip interacts with the adapter through the `ServerAdapterModule` interface
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-1. **Instructions Bundle Loading**: Asynchronously loads markdown system instructions from `config.instructionsFilePath` and appends relative path directives (`Resolve any relative file references from <dir>/`).
-2. **Runtime Skills Integration**: Selected Paperclip catalog skills are materialized as symlinks into `~/.gemini/skills` and mounted to `agy` via `--add-dir`. An explicit root directive pointer (`Paperclip has materialized selected runtime skills...`) is injected into the prompt.
+1. **Runtime Skills Integration**: Selected Paperclip catalog skills are materialized as symlinks into `~/.gemini/skills` and mounted to `agy` via `--add-dir`. An explicit root directive pointer (`Paperclip has materialized selected runtime skills...`) is injected at the very head of the prompt.
+2. **Instructions Bundle Loading**: Asynchronously loads markdown system instructions from `config.instructionsFilePath` and appends relative path directives (`Resolve any relative file references from <dir>/`).
 3. **Cold Start vs. Resumed Session**: Renders `bootstrapPromptTemplate` only on initial turns (`!sessionId`). On resumed sessions, delivers event-driven `renderPaperclipWakePrompt` delta prompts and suppresses redundant heartbeat instructions.
 4. **Runtime & API Notes**: Formats active `PAPERCLIP_*` environment keys and Paperclip REST API curl guides.
 5. **Assembly**: Combines sections using `@paperclipai/adapter-utils` `joinPromptSections` and calculates granular `promptMetrics` (`promptChars`, `instructionsChars`, `skillsChars`, `bootstrapPromptChars`, `wakePromptChars`, `sessionHandoffChars`, `runtimeNoteChars`, `heartbeatPromptChars`).

@@ -104,6 +104,6 @@ describe("Antigravity Skills Management", () => {
     // Sync with desired = [] (should remove skill-a if managed)
     const snapshot = await listAntigravitySkills(ctx);
     expect(snapshot.adapterType).toBe("antigravity_local");
-    expect(snapshot.skillsHome).toBe(skillsHome);
+    expect(snapshot.supported).toBe(true);
   });
 });

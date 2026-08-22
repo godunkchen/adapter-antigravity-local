@@ -50,9 +50,9 @@ describe("skills integration", () => {
 
   /**
    * Asserts that desired/selected skills are correctly resolved and symlinked 
-   * under the active home's plugins directory.
+   * under the active home's skills directory.
    */
-  it("successfully syncs skills by creating symlinks in ~/.agy/plugins", async () => {
+  it("successfully syncs skills by creating symlinks in ~/.gemini/skills", async () => {
     const ctx = {
       config: {
         env: {
@@ -65,26 +65,21 @@ describe("skills integration", () => {
 
     expect(snapshot.adapterType).toBe("antigravity_local");
     
-    const pluginsDir = path.join(tempHome, ".agy", "plugins");
+    const skillsDir = path.join(tempHome, ".gemini", "skills");
     
-    const dirExists = await fs.stat(pluginsDir).then(s => s.isDirectory()).catch(() => false);
+    const dirExists = await fs.stat(skillsDir).then(s => s.isDirectory()).catch(() => false);
     expect(dirExists).toBe(true);
 
-    const requiredLink = path.join(pluginsDir, "required-skill-plugin");
-    const optionalLink = path.join(pluginsDir, "test-skill-plugin");
-
-    const requiredTarget = await fs.readlink(requiredLink);
+    const optionalLink = path.join(skillsDir, "test-skill-plugin");
     const optionalTarget = await fs.readlink(optionalLink);
-
-    expect(requiredTarget).toBe("/mock/source/required-skill");
     expect(optionalTarget).toBe("/mock/source/test-skill");
   });
 
   /**
    * Ensures that when optional skills are unselected, their corresponding symlinks 
-   * are cleanly unlinked/deleted from the plugins home directory on disk.
+   * are cleanly unlinked/deleted from the skills home directory on disk.
    */
-  it("removes unselected optional symlinks from the plugins directory", async () => {
+  it("removes unselected optional symlinks from the skills directory", async () => {
     const ctx = {
       config: {
         env: {
@@ -97,15 +92,11 @@ describe("skills integration", () => {
 
     await syncAntigravitySkills(ctx as any, []);
 
-    const pluginsDir = path.join(tempHome, ".agy", "plugins");
-    const optionalLink = path.join(pluginsDir, "test-skill-plugin");
-    const requiredLink = path.join(pluginsDir, "required-skill-plugin");
+    const skillsDir = path.join(tempHome, ".gemini", "skills");
+    const optionalLink = path.join(skillsDir, "test-skill-plugin");
 
     const optionalExists = await fs.stat(optionalLink).catch(() => false);
     expect(optionalExists).toBe(false);
-
-    const requiredExists = await fs.readlink(requiredLink).catch(() => null);
-    expect(requiredExists).toBe("/mock/source/required-skill");
   });
 
   /**

@@ -8,6 +8,7 @@ const {
   runAdapterExecutionTargetProcess,
   ensureAdapterExecutionTargetCommandResolvable,
   resolveAdapterExecutionTargetCommandForLogs,
+  readPaperclipRuntimeSkillEntriesMock,
 } = vi.hoisted(() => ({
   runAdapterExecutionTargetProcess: vi.fn(async () => ({
     exitCode: 0,
@@ -20,6 +21,7 @@ const {
   })),
   ensureAdapterExecutionTargetCommandResolvable: vi.fn(async () => undefined),
   resolveAdapterExecutionTargetCommandForLogs: vi.fn(async () => "/usr/local/bin/agy"),
+  readPaperclipRuntimeSkillEntriesMock: vi.fn(),
 }));
 
 vi.mock("@paperclipai/adapter-utils/execution-target", async () => {
@@ -41,6 +43,12 @@ vi.mock("@paperclipai/adapter-utils/server-utils", async () => {
   return {
     ...actual,
     ensureAbsoluteDirectory: vi.fn(async () => undefined),
+    readPaperclipRuntimeSkillEntries: vi.fn(async (...args: any[]) => {
+      if (readPaperclipRuntimeSkillEntriesMock.getMockImplementation()) {
+        return readPaperclipRuntimeSkillEntriesMock(...args);
+      }
+      return actual.readPaperclipRuntimeSkillEntries(...args);
+    }),
   };
 });
 
@@ -606,5 +614,110 @@ describe("antigravity local execution", () => {
     expect(capturedMeta.promptMetrics.sessionHandoffChars).toBeGreaterThan(0);
     expect(capturedMeta.promptMetrics.runtimeNoteChars).toBeGreaterThan(0);
     expect(capturedMeta.promptMetrics.promptChars).toBe(passedPrompt.length);
+  });
+
+  /**
+   * Asserts that configured runtime skills are materialized on disk,
+   * the canonical skill prompt directive is prepended to the prompt,
+   * the skills directory is passed via --add-dir to agy, and promptMetrics tracks skillsChars.
+   */
+  it("materializes desired skills, injects skill prompt directive, and appends --add-dir", async () => {
+    const tmpHome = await fs.mkdtemp(path.join(os.tmpdir(), "agy-skills-integration-"));
+    const skillSrcDir = path.join(tmpHome, "skills-source", "review-tool");
+    await fs.mkdir(skillSrcDir, { recursive: true });
+    await fs.writeFile(path.join(skillSrcDir, "SKILL.md"), "# Code Review Skill", "utf8");
+
+    readPaperclipRuntimeSkillEntriesMock.mockImplementationOnce(async () => [
+      {
+        key: "company/review-tool",
+        runtimeName: "review-tool",
+        source: skillSrcDir,
+      },
+      {
+        key: "company/unused-tool",
+        runtimeName: "unused-tool",
+        source: path.join(tmpHome, "skills-source", "unused-tool"),
+      },
+    ]);
+
+    let capturedMeta: any = null;
+
+    try {
+      await execute({
+        runId: "run-skills-1",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Antigravity Reviewer",
+          adapterType: "antigravity_local",
+          adapterConfig: {
+            paperclipSkillSync: {
+              desiredSkills: ["company/review-tool"],
+            },
+          },
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: "agy",
+          env: {
+            HOME: tmpHome,
+          },
+          promptTemplate: "Perform code review: {{context.task}}",
+          paperclipSkillSync: {
+            desiredSkills: ["company/review-tool"],
+          },
+        },
+        context: {
+          task: "Review PR #42",
+          paperclipWorkspace: {
+            cwd: "/home/user/workspace",
+          },
+        },
+        onLog: async () => {},
+        onMeta: async (meta) => {
+          capturedMeta = meta;
+        },
+      });
+
+      const callArgs = runAdapterExecutionTargetProcess.mock.calls[0] as unknown as [string, unknown, string, string[]];
+      const cliArgs = callArgs[3];
+      const passedPrompt = cliArgs[cliArgs.indexOf("--print") + 1];
+      const expectedSkillsHome = path.join(tmpHome, ".gemini", "skills");
+
+      // 1. Verify prompt contains the canonical Paperclip runtime skills notice
+      expect(passedPrompt).toContain("Paperclip has materialized selected runtime skills for this Antigravity session.");
+      expect(passedPrompt).toContain(`Skill root: ${expectedSkillsHome}`);
+      expect(passedPrompt).toContain("Selected skills: review-tool");
+      expect(passedPrompt).toContain("When a task calls for one of these skills, read its SKILL.md from that root and follow it.");
+      expect(passedPrompt).toContain("Perform code review: Review PR #42");
+
+      // 2. Verify skills are linked on disk
+      const linkedSkill = path.join(expectedSkillsHome, "review-tool", "SKILL.md");
+      const content = await fs.readFile(linkedSkill, "utf8");
+      expect(content).toBe("# Code Review Skill");
+
+      // 3. Verify --add-dir includes skillsHome
+      const addDirIndices: number[] = [];
+      cliArgs.forEach((arg, idx) => {
+        if (arg === "--add-dir") addDirIndices.push(idx);
+      });
+      const addDirPaths = addDirIndices.map((idx) => cliArgs[idx + 1]);
+      expect(addDirPaths).toContain(expectedSkillsHome);
+
+      // 4. Verify telemetry & promptMetrics
+      expect(capturedMeta.commandNotes).toContain(
+        `Materialized 1 Paperclip skill(s) for Antigravity at ${expectedSkillsHome}.`,
+      );
+      expect(capturedMeta.promptMetrics.skillsChars).toBeGreaterThan(0);
+      expect(capturedMeta.promptMetrics.promptChars).toBe(passedPrompt.length);
+    } finally {
+      readPaperclipRuntimeSkillEntriesMock.mockReset();
+      await fs.rm(tmpHome, { recursive: true, force: true }).catch(() => {});
+    }
   });
 });

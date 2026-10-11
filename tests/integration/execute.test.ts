@@ -184,6 +184,78 @@ describe("antigravity local execution", () => {
     expect(cliArgs.indexOf("--effort")).toBe(-1);
   });
 
+  it("configures latest flat Gemini 3.8 model and Claude 5.5 directly", async () => {
+    await execute({
+      runId: "run-local-gemini38",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Antigravity CEO",
+        adapterType: "antigravity_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: {
+        model: "gemini-3.8-flash-high",
+      },
+      context: {
+        paperclipWorkspace: {
+          cwd: "/home/user/workspace",
+        },
+      },
+      onLog: async () => {},
+    });
+
+    const callArgs = runAdapterExecutionTargetProcess.mock.calls[0] as unknown as [string, unknown, string, string[], { env: Record<string, string> }];
+    const cliArgs = callArgs[3];
+
+    const modelIdx = cliArgs.indexOf("--model");
+    expect(modelIdx).toBeGreaterThan(-1);
+    expect(cliArgs[modelIdx + 1]).toBe("gemini-3.8-flash-high");
+    expect(cliArgs.indexOf("--effort")).toBe(-1);
+
+    runAdapterExecutionTargetProcess.mockClear();
+
+    await execute({
+      runId: "run-local-claude55",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Antigravity CEO",
+        adapterType: "antigravity_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: {
+        model: "claude-sonnet-5-5-high",
+      },
+      context: {
+        paperclipWorkspace: {
+          cwd: "/home/user/workspace",
+        },
+      },
+      onLog: async () => {},
+    });
+
+    const callArgs2 = runAdapterExecutionTargetProcess.mock.calls[0] as unknown as [string, unknown, string, string[], { env: Record<string, string> }];
+    const cliArgs2 = callArgs2[3];
+
+    const modelIdx2 = cliArgs2.indexOf("--model");
+    expect(modelIdx2).toBeGreaterThan(-1);
+    expect(cliArgs2[modelIdx2 + 1]).toBe("claude-sonnet-5-5-high");
+    expect(cliArgs2.indexOf("--effort")).toBe(-1);
+  });
+
   it("configures thinkingEffort and timeoutSec via CLI flags", async () => {
     await execute({
       runId: "run-local-effort",

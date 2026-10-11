@@ -191,11 +191,15 @@ export function resolveAgyModelAndEffort(rawModel?: string, rawEffort?: string):
   const userEffort =
     normalizedEffortInput === "low" || normalizedEffortInput === "minimal"
       ? "low"
-      : normalizedEffortInput === "high" || normalizedEffortInput === "max"
-        ? "high"
-        : normalizedEffortInput === "medium"
-          ? "medium"
-          : undefined;
+      : normalizedEffortInput === "medium"
+        ? "medium"
+        : normalizedEffortInput === "high"
+          ? "high"
+          : normalizedEffortInput === "xhigh" || normalizedEffortInput === "extra-high"
+            ? "xhigh"
+            : normalizedEffortInput === "max" || normalizedEffortInput === "maximum"
+              ? "max"
+              : undefined;
 
   if (!modelStr || modelStr.toLowerCase() === "auto") {
     return userEffort ? { effort: userEffort } : {};
@@ -203,15 +207,44 @@ export function resolveAgyModelAndEffort(rawModel?: string, rawEffort?: string):
 
   const lower = modelStr.toLowerCase();
 
-  // 1. Claude models -> exact agy CLI model identifier (DO NOT accept --effort)
-  if (lower === "claude-sonnet-4-6" || lower === "claude-sonnet-4.6-thinking" || lower.includes("sonnet") || lower === "smart") {
-    return { model: "claude-sonnet-4-6" };
-  }
-  if (lower === "claude-opus-4-6-thinking" || lower.includes("opus")) {
-    return { model: "claude-opus-4-6-thinking" };
+  // 1. Claude 5.5 models (agy 1.3.3)
+  if (lower.startsWith("claude-sonnet-5-5") || lower.startsWith("claude-sonnet-5.5")) {
+    if (!userEffort) {
+      if (lower.includes("-low")) return { model: "claude-sonnet-5-5-low" };
+      if (lower.includes("-medium")) return { model: "claude-sonnet-5-5-medium" };
+      if (lower.includes("-high")) return { model: "claude-sonnet-5-5-high" };
+      return { model: "claude-sonnet-5-5-high" };
+    }
+    const targetEffort = userEffort === "xhigh" || userEffort === "max" ? "high" : userEffort;
+    return { model: `claude-sonnet-5-5-${targetEffort}` };
   }
 
-  // 2. GPT-OSS 120B
+  if (lower.startsWith("claude-opus-5-5") || lower.startsWith("claude-opus-5.5")) {
+    if (!userEffort) {
+      if (lower.includes("-low")) return { model: "claude-opus-5-5-low" };
+      if (lower.includes("-medium")) return { model: "claude-opus-5-5-medium" };
+      if (lower.includes("-high")) return { model: "claude-opus-5-5-high" };
+      return { model: "claude-opus-5-5-high" };
+    }
+    const targetEffort = userEffort === "xhigh" || userEffort === "max" ? "high" : userEffort;
+    return { model: `claude-opus-5-5-${targetEffort}` };
+  }
+
+  // 2. Legacy Claude models & general aliases
+  if (lower === "claude-sonnet-4-6" || lower === "claude-sonnet-4.6-thinking") {
+    return { model: "claude-sonnet-4-6" };
+  }
+  if (lower === "claude-opus-4-6-thinking" || lower === "claude-opus-4-6") {
+    return { model: "claude-opus-4-6-thinking" };
+  }
+  if (lower.includes("sonnet") || lower === "smart") {
+    return { model: "claude-sonnet-5-5-high" };
+  }
+  if (lower.includes("opus")) {
+    return { model: "claude-opus-5-5-high" };
+  }
+
+  // 3. GPT-OSS 120B
   if (lower.includes("gpt-oss-120b")) {
     if (lower === "gpt-oss-120b-medium" && !userEffort) {
       return { model: "gpt-oss-120b-medium" };
@@ -222,7 +255,22 @@ export function resolveAgyModelAndEffort(rawModel?: string, rawEffort?: string):
     return { model: "gpt-oss-120b-medium" };
   }
 
-  // 3. Gemini 3.7 Flash
+  // 4. Gemini 3.8 Flash (agy 1.3.3)
+  if (lower.includes("gemini-3.8-flash") || lower.includes("gemini-3.8")) {
+    if (!userEffort) {
+      if (lower.includes("-high")) return { model: "gemini-3.8-flash-high" };
+      if (lower.includes("-medium")) return { model: "gemini-3.8-flash-medium" };
+      if (lower.includes("-low")) return { model: "gemini-3.8-flash-low" };
+      return { model: "gemini-3.8-flash", effort: "high" };
+    }
+    if (lower === "gemini-3.8-flash") {
+      return { model: "gemini-3.8-flash", effort: userEffort };
+    }
+    const targetEffort = userEffort === "xhigh" || userEffort === "max" ? "high" : userEffort;
+    return { model: `gemini-3.8-flash-${targetEffort}` };
+  }
+
+  // 5. Gemini 3.7 Flash
   if (lower.includes("gemini-3.7-flash") || lower.includes("gemini-3.7")) {
     if (!userEffort) {
       if (lower.includes("-high")) return { model: "gemini-3.7-flash-high" };
@@ -233,10 +281,11 @@ export function resolveAgyModelAndEffort(rawModel?: string, rawEffort?: string):
     if (lower === "gemini-3.7-flash") {
       return { model: "gemini-3.7-flash", effort: userEffort };
     }
-    return { model: `gemini-3.7-flash-${userEffort}` };
+    const targetEffort = userEffort === "xhigh" || userEffort === "max" ? "high" : userEffort;
+    return { model: `gemini-3.7-flash-${targetEffort}` };
   }
 
-  // 4. Gemini 3.6 Flash
+  // 6. Gemini 3.6 Flash
   if (lower.includes("gemini-3.6-flash") || lower.includes("gemini-3.6")) {
     if (!userEffort) {
       if (lower.includes("-high")) return { model: "gemini-3.6-flash-high" };
@@ -247,13 +296,15 @@ export function resolveAgyModelAndEffort(rawModel?: string, rawEffort?: string):
     if (lower === "gemini-3.6-flash") {
       return { model: "gemini-3.6-flash", effort: userEffort };
     }
-    return { model: `gemini-3.6-flash-${userEffort}` };
+    const targetEffort = userEffort === "xhigh" || userEffort === "max" ? "high" : userEffort;
+    return { model: `gemini-3.6-flash-${targetEffort}` };
   }
 
-  // 5. Gemini 3.5 Flash -> cheap / fast / flash
+  // 7. Gemini 3.5 Flash / Cheap / Fast
   if (lower === "cheap" || lower === "fast" || lower.includes("gemini-3.5-flash") || lower.includes("gemini-3.5")) {
     if (lower === "cheap" || lower === "fast") {
-      return { model: `gemini-3.5-flash-${userEffort || "medium"}` };
+      const targetEffort = userEffort === "xhigh" || userEffort === "max" ? "high" : userEffort || "low";
+      return { model: `gemini-3.8-flash-${targetEffort}` };
     }
     if (!userEffort) {
       if (lower.includes("-high")) return { model: "gemini-3.5-flash-high" };
@@ -264,10 +315,11 @@ export function resolveAgyModelAndEffort(rawModel?: string, rawEffort?: string):
     if (lower === "gemini-3.5-flash") {
       return { model: "gemini-3.5-flash", effort: userEffort };
     }
-    return { model: `gemini-3.5-flash-${userEffort}` };
+    const targetEffort = userEffort === "xhigh" || userEffort === "max" ? "high" : userEffort;
+    return { model: `gemini-3.5-flash-${targetEffort}` };
   }
 
-  // 6. Gemini 3.1 Pro
+  // 8. Gemini 3.1 Pro
   if (lower.includes("gemini-3.1-pro") || lower.includes("gemini-3.1")) {
     if (!userEffort) {
       if (lower.includes("-low")) return { model: "gemini-3.1-pro-low" };

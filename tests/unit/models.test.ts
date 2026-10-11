@@ -4,19 +4,23 @@ import { models as STATIC_MODELS, DEFAULT_ANTIGRAVITY_LOCAL_MODEL } from "../../
 
 const SAMPLE_AGY_MODELS_OUTPUT = `
 Fetching available models...
+gemini-3.8-flash-high\tGemini 3.8 Flash (High)
+gemini-3.8-flash-medium\tGemini 3.8 Flash (Medium)
+gemini-3.8-flash-low\tGemini 3.8 Flash (Low)
 gemini-3.7-flash-high\tGemini 3.7 Flash (High)
 gemini-3.7-flash-medium\tGemini 3.7 Flash (Medium)
 gemini-3.7-flash-low\tGemini 3.7 Flash (Low)
 gemini-3.6-flash-high\tGemini 3.6 Flash (High)
 gemini-3.6-flash-medium\tGemini 3.6 Flash (Medium)
 gemini-3.6-flash-low\tGemini 3.6 Flash (Low)
-gemini-3.5-flash-high\tGemini 3.5 Flash (High)
-gemini-3.5-flash-medium\tGemini 3.5 Flash (Medium)
-gemini-3.5-flash-low\tGemini 3.5 Flash (Low)
 gemini-3.1-pro-high\tGemini 3.1 Pro (High)
 gemini-3.1-pro-low\tGemini 3.1 Pro (Low)
-claude-sonnet-4-6\tClaude Sonnet 4.6 (Thinking)
-claude-opus-4-6-thinking\tClaude Opus 4.6 (Thinking)
+claude-opus-5-5-low\tClaude Opus 5.5 (Low)
+claude-opus-5-5-medium\tClaude Opus 5.5 (Medium)
+claude-opus-5-5-high\tClaude Opus 5.5 (High)
+claude-sonnet-5-5-low\tClaude Sonnet 5.5 (Low)
+claude-sonnet-5-5-medium\tClaude Sonnet 5.5 (Medium)
+claude-sonnet-5-5-high\tClaude Sonnet 5.5 (High)
 gpt-oss-120b-medium\tGPT-OSS 120B (Medium)
 `;
 
@@ -53,18 +57,18 @@ describe("Antigravity Models Discovery & Parsing", () => {
   it("parses agy models output into structured model definitions", () => {
     const parsed = parseAgyModelsOutput(SAMPLE_AGY_MODELS_OUTPUT);
 
-    expect(parsed.length).toBe(15); // Auto + 14 models
+    expect(parsed.length).toBe(18); // Auto + 17 models
     expect(parsed[0]).toEqual({
       id: DEFAULT_ANTIGRAVITY_LOCAL_MODEL,
       label: "Auto (Use global configured default)",
     });
     expect(parsed[1]).toEqual({
-      id: "gemini-3.7-flash-high",
-      label: "Gemini 3.7 Flash (High)",
+      id: "gemini-3.8-flash-high",
+      label: "Gemini 3.8 Flash (High)",
     });
-    expect(parsed.find((m) => m.id === "claude-sonnet-4-6")).toEqual({
-      id: "claude-sonnet-4-6",
-      label: "Claude Sonnet 4.6 (Thinking)",
+    expect(parsed.find((m) => m.id === "claude-sonnet-5-5-high")).toEqual({
+      id: "claude-sonnet-5-5-high",
+      label: "Claude Sonnet 5.5 (High)",
     });
     expect(parsed.find((m) => m.id === "gpt-oss-120b-medium")).toEqual({
       id: "gpt-oss-120b-medium",
@@ -74,13 +78,13 @@ describe("Antigravity Models Discovery & Parsing", () => {
 
   it("deduplicates model list", () => {
     const list = [
-      { id: "gemini-3.7-flash-high", label: "Gemini 3.7 Flash (High)" },
-      { id: "gemini-3.7-flash-high", label: "Gemini 3.7 Flash (Duplicate)" },
-      { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6 (Thinking)" },
+      { id: "gemini-3.8-flash-high", label: "Gemini 3.8 Flash (High)" },
+      { id: "gemini-3.8-flash-high", label: "Gemini 3.8 Flash (Duplicate)" },
+      { id: "claude-sonnet-5-5-high", label: "Claude Sonnet 5.5 (High)" },
     ];
     const deduped = dedupeModels(list);
     expect(deduped.length).toBe(2);
-    expect(deduped[0].label).toBe("Gemini 3.7 Flash (High)");
+    expect(deduped[0].label).toBe("Gemini 3.8 Flash (High)");
   });
 
   it("returns fallback static models when CLI is unavailable", async () => {
@@ -90,12 +94,12 @@ describe("Antigravity Models Discovery & Parsing", () => {
 
   it("exports listModels and refreshModels", async () => {
     const list = await listModels();
-    expect(list.length).toBe(15);
+    expect(list.length).toBe(18);
     expect(list[0].id).toBe(DEFAULT_ANTIGRAVITY_LOCAL_MODEL);
-    expect(list[1].id).toBe("gemini-3.7-flash-high");
+    expect(list[1].id).toBe("gemini-3.8-flash-high");
 
     const refreshed = await refreshModels();
-    expect(refreshed.length).toBe(15);
+    expect(refreshed.length).toBe(18);
     expect(refreshed[0].id).toBe(DEFAULT_ANTIGRAVITY_LOCAL_MODEL);
   });
 });
@@ -105,7 +109,33 @@ describe("resolveAgyModelAndEffort Resolution Rules", () => {
     expect(resolveAgyModelAndEffort("auto")).toEqual({});
     expect(resolveAgyModelAndEffort("")).toEqual({});
     expect(resolveAgyModelAndEffort("auto", "high")).toEqual({ effort: "high" });
+    expect(resolveAgyModelAndEffort("auto", "xhigh")).toEqual({ effort: "xhigh" });
+    expect(resolveAgyModelAndEffort("auto", "max")).toEqual({ effort: "max" });
     expect(resolveAgyModelAndEffort(undefined, "low")).toEqual({ effort: "low" });
+  });
+
+  it("resolves Gemini 3.8 models directly or adapts to effort overrides", () => {
+    expect(resolveAgyModelAndEffort("gemini-3.8-flash-high")).toEqual({
+      model: "gemini-3.8-flash-high",
+    });
+    expect(resolveAgyModelAndEffort("gemini-3.8-flash-medium")).toEqual({
+      model: "gemini-3.8-flash-medium",
+    });
+    expect(resolveAgyModelAndEffort("gemini-3.8-flash-low")).toEqual({
+      model: "gemini-3.8-flash-low",
+    });
+    // Effort override adapts composite model suffix
+    expect(resolveAgyModelAndEffort("gemini-3.8-flash-high", "low")).toEqual({
+      model: "gemini-3.8-flash-low",
+    });
+    expect(resolveAgyModelAndEffort("gemini-3.8-flash-low", "xhigh")).toEqual({
+      model: "gemini-3.8-flash-high",
+    });
+    // Base model ID
+    expect(resolveAgyModelAndEffort("gemini-3.8-flash", "medium")).toEqual({
+      model: "gemini-3.8-flash",
+      effort: "medium",
+    });
   });
 
   it("resolves flat Gemini 3.7 models directly or adapts to effort overrides", () => {
@@ -129,7 +159,7 @@ describe("resolveAgyModelAndEffort Resolution Rules", () => {
     });
   });
 
-  it("resolves Gemini 3.6 and 3.5 models", () => {
+  it("resolves Gemini 3.6 and 3.5 models and cheap alias", () => {
     expect(resolveAgyModelAndEffort("gemini-3.6-flash-high")).toEqual({
       model: "gemini-3.6-flash-high",
     });
@@ -141,11 +171,50 @@ describe("resolveAgyModelAndEffort Resolution Rules", () => {
       model: "gemini-3.5-flash-medium",
     });
     expect(resolveAgyModelAndEffort("cheap")).toEqual({
-      model: "gemini-3.5-flash-medium",
+      model: "gemini-3.8-flash-low",
+    });
+    expect(resolveAgyModelAndEffort("cheap", "high")).toEqual({
+      model: "gemini-3.8-flash-high",
     });
     expect(resolveAgyModelAndEffort("gemini-3.5-flash", "high")).toEqual({
       model: "gemini-3.5-flash",
       effort: "high",
+    });
+  });
+
+  it("resolves Claude 5.5 composite models directly or adapts to effort", () => {
+    expect(resolveAgyModelAndEffort("claude-sonnet-5-5-high")).toEqual({
+      model: "claude-sonnet-5-5-high",
+    });
+    expect(resolveAgyModelAndEffort("claude-sonnet-5-5-medium")).toEqual({
+      model: "claude-sonnet-5-5-medium",
+    });
+    expect(resolveAgyModelAndEffort("claude-sonnet-5-5-low")).toEqual({
+      model: "claude-sonnet-5-5-low",
+    });
+    expect(resolveAgyModelAndEffort("claude-sonnet-5-5-high", "low")).toEqual({
+      model: "claude-sonnet-5-5-low",
+    });
+    expect(resolveAgyModelAndEffort("claude-opus-5-5-high")).toEqual({
+      model: "claude-opus-5-5-high",
+    });
+    expect(resolveAgyModelAndEffort("claude-opus-5-5-low", "medium")).toEqual({
+      model: "claude-opus-5-5-medium",
+    });
+  });
+
+  it("resolves legacy Claude models and aliases", () => {
+    expect(resolveAgyModelAndEffort("claude-sonnet-4-6")).toEqual({
+      model: "claude-sonnet-4-6",
+    });
+    expect(resolveAgyModelAndEffort("claude-sonnet-4.6-thinking")).toEqual({
+      model: "claude-sonnet-4-6",
+    });
+    expect(resolveAgyModelAndEffort("claude-opus-4-6-thinking")).toEqual({
+      model: "claude-opus-4-6-thinking",
+    });
+    expect(resolveAgyModelAndEffort("smart")).toEqual({
+      model: "claude-sonnet-5-5-high",
     });
   });
 
@@ -162,24 +231,6 @@ describe("resolveAgyModelAndEffort Resolution Rules", () => {
     });
     expect(resolveAgyModelAndEffort("gemini-3.1-pro-high", "low")).toEqual({
       model: "gemini-3.1-pro-low",
-    });
-  });
-
-  it("resolves Claude models to official agy model identifiers without --effort", () => {
-    expect(resolveAgyModelAndEffort("claude-sonnet-4-6")).toEqual({
-      model: "claude-sonnet-4-6",
-    });
-    expect(resolveAgyModelAndEffort("claude-sonnet-4.6-thinking")).toEqual({
-      model: "claude-sonnet-4-6",
-    });
-    expect(resolveAgyModelAndEffort("Claude Sonnet 4.6 (Thinking)", "high")).toEqual({
-      model: "claude-sonnet-4-6",
-    });
-    expect(resolveAgyModelAndEffort("claude-opus-4-6-thinking")).toEqual({
-      model: "claude-opus-4-6-thinking",
-    });
-    expect(resolveAgyModelAndEffort("smart")).toEqual({
-      model: "claude-sonnet-4-6",
     });
   });
 

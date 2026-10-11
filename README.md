@@ -30,16 +30,17 @@ Models are passed directly to the `agy` CLI via `--model` and optionally `--effo
 
 | Model Family | Model Identifiers | Label / Description |
 |---|---|---|
+| **Gemini 3.8 Flash** | `gemini-3.8-flash-high`, `gemini-3.8-flash-medium`, `gemini-3.8-flash-low` | Gemini 3.8 Flash with variable reasoning effort (default for cheap profile: low) |
 | **Gemini 3.7 Flash** | `gemini-3.7-flash-high`, `gemini-3.7-flash-medium`, `gemini-3.7-flash-low` | Gemini 3.7 Flash with variable reasoning effort |
 | **Gemini 3.6 Flash** | `gemini-3.6-flash-high`, `gemini-3.6-flash-medium`, `gemini-3.6-flash-low` | Gemini 3.6 Flash with variable reasoning effort |
-| **Gemini 3.5 Flash** | `gemini-3.5-flash-high`, `gemini-3.5-flash-medium`, `gemini-3.5-flash-low` | Gemini 3.5 Flash (default for cheap profile) |
 | **Gemini 3.1 Pro** | `gemini-3.1-pro-high`, `gemini-3.1-pro-low` | Gemini 3.1 Pro with High / Low effort |
-| **Claude Sonnet 4.6** | `claude-sonnet-4-6` *(alias: `claude-sonnet-4.6-thinking`)* | Claude Sonnet 4.6 (Thinking) |
-| **Claude Opus 4.6** | `claude-opus-4-6-thinking` | Claude Opus 4.6 (Thinking) |
+| **Claude Opus 5.5** | `claude-opus-5-5-high`, `claude-opus-5-5-medium`, `claude-opus-5-5-low` | Claude Opus 5.5 with High / Medium / Low effort |
+| **Claude Sonnet 5.5** | `claude-sonnet-5-5-high`, `claude-sonnet-5-5-medium`, `claude-sonnet-5-5-low` | Claude Sonnet 5.5 with High / Medium / Low effort |
+| **Claude 4.6 (Legacy)** | `claude-sonnet-4-6`, `claude-opus-4-6-thinking` | Claude 4.6 (Thinking) backward-compatibility |
 | **GPT-OSS 120B** | `gpt-oss-120b-medium` *(alias: `gpt-oss-120b`)* | GPT-OSS 120B (Medium) |
 | **Auto** | `auto` | Global default routed automatically by Antigravity |
 
-> *Note: Model availability depends on your local Antigravity installation and `agy models` discovery.*
+> *Note: Model availability depends on your local Antigravity installation (`agy 1.3.3+`) and dynamic `agy models` discovery.*
 
 ---
 

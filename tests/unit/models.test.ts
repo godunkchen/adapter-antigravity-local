@@ -57,7 +57,7 @@ describe("Antigravity Models Discovery & Parsing", () => {
   it("parses agy models output into structured model definitions", () => {
     const parsed = parseAgyModelsOutput(SAMPLE_AGY_MODELS_OUTPUT);
 
-    expect(parsed.length).toBe(18); // Auto + 17 models
+    expect(parsed.length).toBe(19); // Auto + 18 models
     expect(parsed[0]).toEqual({
       id: DEFAULT_ANTIGRAVITY_LOCAL_MODEL,
       label: "Auto (Use global configured default)",
@@ -94,12 +94,12 @@ describe("Antigravity Models Discovery & Parsing", () => {
 
   it("exports listModels and refreshModels", async () => {
     const list = await listModels();
-    expect(list.length).toBe(18);
+    expect(list.length).toBe(19);
     expect(list[0].id).toBe(DEFAULT_ANTIGRAVITY_LOCAL_MODEL);
     expect(list[1].id).toBe("gemini-3.8-flash-high");
 
     const refreshed = await refreshModels();
-    expect(refreshed.length).toBe(18);
+    expect(refreshed.length).toBe(19);
     expect(refreshed[0].id).toBe(DEFAULT_ANTIGRAVITY_LOCAL_MODEL);
   });
 });

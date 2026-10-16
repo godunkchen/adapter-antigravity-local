@@ -468,6 +468,7 @@ export function parseAntigravityStreamJson(stdout: string, stderr = "") {
   const metrics = extractAntigravityExecutionMetrics(stdout, stderr);
   return {
     sessionId,
+    summary: metrics.response ?? "",
     ...metrics,
   };
 }

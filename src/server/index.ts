@@ -14,7 +14,7 @@ export {
   agySessionCwdMatchesExecutionTarget,
 } from "./execute.js";
 export { listAntigravitySkills, syncAntigravitySkills } from "./skills.js";
-export { testEnvironment } from "./test.js";
+export { testEnvironment, probeAntigravityPlugins } from "./test.js";
 export { getConfigSchema } from "./config-schema.js";
 export { getQuotaWindows, parseAgyUsageQuotaOutput } from "./quota.js";
 export {

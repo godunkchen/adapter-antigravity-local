@@ -241,4 +241,163 @@ describe("testEnvironment probe pipeline", () => {
     expect(result.checks.some((c) => c.code === "antigravity_api_key_present")).toBe(true);
     expect(result.checks.some((c) => c.code === "antigravity_api_key_missing")).toBe(false);
   });
+
+  /**
+   * Scenario: Stream-JSON hello probe output & --max-turns 1 flags.
+   */
+  it("parses stream-json hello probe output and passes --output-format stream-json --max-turns 1", async () => {
+    runAdapterExecutionTargetProcess.mockResolvedValueOnce({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      stdout:
+        '{"event":"init","conversation_id":"probe-1"}\n{"type":"result","result":"Hello, everything is ready!"}\n',
+      stderr: "",
+      pid: 501,
+      startedAt: new Date().toISOString(),
+    });
+
+    const result = await testEnvironment({
+      adapterType: "antigravity_local",
+      config: {
+        command: "agy",
+      },
+      onLog: async () => {},
+    });
+
+    expect(result.status).toBe("pass");
+    const passedCheck = result.checks.find((c) => c.code === "antigravity_hello_probe_passed");
+    expect(passedCheck).toBeDefined();
+    expect(passedCheck?.detail).toContain("Hello, everything is ready!");
+
+    const callArgs = (runAdapterExecutionTargetProcess.mock.calls[0] as unknown as [string, unknown, string, string[]])[3];
+    expect(callArgs).toContain("--output-format");
+    expect(callArgs).toContain("stream-json");
+    expect(callArgs).toContain("--max-turns");
+    expect(callArgs).toContain("1");
+  });
+
+  /**
+   * Scenario: Google Cloud ADC authentication detection (`AGY_ADC_AUTH=1` in v1.3.5+).
+   */
+  it("detects AGY_ADC_AUTH and GOOGLE_CLOUD_PROJECT credentials", async () => {
+    const result = await testEnvironment({
+      adapterType: "antigravity_local",
+      config: {
+        command: "agy",
+        env: {
+          AGY_ADC_AUTH: "1",
+          GOOGLE_CLOUD_PROJECT: "my-gcp-project",
+        },
+      },
+      onLog: async () => {},
+    });
+
+    const adcCheck = result.checks.find((c) => c.code === "antigravity_adc_auth_configured");
+    expect(adcCheck).toBeDefined();
+    expect(adcCheck?.detail).toContain('GOOGLE_CLOUD_PROJECT="my-gcp-project"');
+  });
+
+  /**
+   * Scenario: Remote target auth missing escalates to error with adapter_auth_missing reasonCode and loginUrl hint.
+   */
+  it("escalates missing auth on remote execution target to error with adapter_auth_missing and loginUrl hint", async () => {
+    runAdapterExecutionTargetProcess.mockResolvedValueOnce({
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      stdout: "",
+      stderr: "Not logged in. Authenticate at https://accounts.google.com/o/oauth2/auth?client_id=agy",
+      pid: 502,
+      startedAt: new Date().toISOString(),
+    });
+
+    const result = await testEnvironment({
+      adapterType: "antigravity_local",
+      executionTarget: {
+        kind: "remote",
+        provider: "ssh",
+        host: "oci-sig-1",
+      } as any,
+      config: {
+        command: "agy",
+      },
+      onLog: async () => {},
+    });
+
+    expect(result.status).toBe("fail");
+    const authCheck = result.checks.find((c) => c.code === "antigravity_hello_probe_auth_required");
+    expect(authCheck).toBeDefined();
+    expect(authCheck?.level).toBe("error");
+    expect(authCheck?.reasonCode).toBe("adapter_auth_missing");
+    expect(authCheck?.hint).toContain("https://accounts.google.com/o/oauth2/auth?client_id=agy");
+  });
+
+  /**
+   * Scenario: Transient upstream error (503) warns instead of failing hard.
+   */
+  it("warns with antigravity_hello_probe_transient_upstream on 503 service overload", async () => {
+    runAdapterExecutionTargetProcess.mockResolvedValueOnce({
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      stdout: "",
+      stderr: "503 Service Unavailable: upstream model server overloaded",
+      pid: 503,
+      startedAt: new Date().toISOString(),
+    });
+
+    const result = await testEnvironment({
+      adapterType: "antigravity_local",
+      config: {
+        command: "agy",
+      },
+      onLog: async () => {},
+    });
+
+    expect(result.status).toBe("warn");
+    const transientCheck = result.checks.find((c) => c.code === "antigravity_hello_probe_transient_upstream");
+    expect(transientCheck).toBeDefined();
+    expect(transientCheck?.level).toBe("warn");
+  });
+
+  /**
+   * Scenario: Optional plugin inspection (`probePlugins: true`, `agy plugin list --json` in v1.3.4+).
+   */
+  it("probes installed Antigravity plugins when config.probePlugins is enabled", async () => {
+    runAdapterExecutionTargetProcess
+      .mockResolvedValueOnce({
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout: '[{"name":"github-pr-helper"},{"name":"bigquery-tools"}]',
+        stderr: "",
+        pid: 504,
+        startedAt: new Date().toISOString(),
+      })
+      .mockResolvedValueOnce({
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout: '{"type":"result","result":"Hello!"}',
+        stderr: "",
+        pid: 505,
+        startedAt: new Date().toISOString(),
+      });
+
+    const result = await testEnvironment({
+      adapterType: "antigravity_local",
+      config: {
+        command: "agy",
+        probePlugins: true,
+      },
+      onLog: async () => {},
+    });
+
+    expect(result.status).toBe("pass");
+    const pluginCheck = result.checks.find((c) => c.code === "antigravity_plugins_probed");
+    expect(pluginCheck).toBeDefined();
+    expect(pluginCheck?.message).toContain("Detected 2 installed Antigravity plugin(s).");
+  });
 });
+

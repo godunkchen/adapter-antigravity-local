@@ -1,13 +1,14 @@
 /**
  * @fileoverview Environment connection probe and diagnostic checks for Antigravity local executions.
  * Performs deep, step-by-step diagnostic checks validating filesystem permissions, CLI presence,
- * credentials, sandboxing triggers, and live API connectivity through a hello telemetry probe.
- * 
+ * credentials (API key, Gemini API key, GCP Application Default Credentials), sandboxing triggers,
+ * optional v1.3.4+ plugin inventory, and live API connectivity through a stream-json hello probe.
+ * Aligned with `@paperclipai/adapter-claude-local`.
+ *
  * @copyright Antigravity Adapter Contributors
  * @license MIT
  */
 
-import path from "node:path";
 import type {
   AdapterEnvironmentCheck,
   AdapterEnvironmentTestContext,
@@ -19,7 +20,6 @@ import {
   asNumber,
   asString,
   asStringArray,
-  ensurePathInEnv,
   parseObject,
 } from "@paperclipai/adapter-utils/server-utils";
 import {
@@ -31,7 +31,16 @@ import {
   resolveAdapterExecutionTargetCwd,
 } from "@paperclipai/adapter-utils/execution-target";
 import { DEFAULT_ANTIGRAVITY_LOCAL_MODEL, SANDBOX_INSTALL_COMMAND } from "../index.js";
-import { detectAntigravityAuthRequired, detectAntigravityQuotaExhausted } from "./parse.js";
+import { ensureAntigravityPathInEnv } from "./cli-capabilities.js";
+import {
+  detectAntigravityAuthRequired,
+  detectAntigravityQuotaExhausted,
+  extractAntigravityRetryNotBefore,
+  hasAntigravityTerminalResult,
+  isAntigravityProviderQuotaExhausted,
+  isAntigravityTransientUpstreamError,
+  parseAntigravityStreamJson,
+} from "./parse.js";
 import { firstNonEmptyLine, commandLooksLike, isNonEmptyString } from "../utils.js";
 import { resolveAgyModelAndEffort } from "./execute.js";
 
@@ -59,7 +68,11 @@ function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentT
  * @returns Cleaned and truncated log details snippet, or null.
  */
 function summarizeProbeDetail(stdout: string, stderr: string): string | null {
-  const raw = firstNonEmptyLine(stderr) || firstNonEmptyLine(stdout);
+  const parsed = parseAntigravityStreamJson(stdout);
+  const raw =
+    firstNonEmptyLine(stderr) ||
+    firstNonEmptyLine(parsed.summary) ||
+    firstNonEmptyLine(stdout);
   if (!raw) {
     return null;
   }
@@ -112,7 +125,7 @@ async function checkWorkingDirectory(
 function resolveExecutionEnvironment(config: Record<string, unknown>): Record<string, string> {
   const envConfig = parseObject(config.env);
   const env: Record<string, string> = {};
-  
+
   for (const [key, value] of Object.entries(envConfig)) {
     if (typeof value === "string") {
       env[key] = value;
@@ -128,7 +141,8 @@ function resolveExecutionEnvironment(config: Record<string, unknown>): Record<st
 }
 
 /**
- * Diagnoses the availability of API key credentials within local configuration or host context.
+ * Diagnoses the availability of API key or GCP Application Default Credentials (`AGY_ADC_AUTH` in v1.3.5+)
+ * within local configuration or host context.
  *
  * @param env - The parsed execution environment mapping.
  * @param targetIsRemote - True if execution occurs in a remote container/SSH system.
@@ -137,26 +151,126 @@ function resolveExecutionEnvironment(config: Record<string, unknown>): Record<st
 function checkApiCredentials(
   env: Record<string, string>,
   targetIsRemote: boolean,
-  model: string,
 ): AdapterEnvironmentCheck {
-  const configApiKey = env.ANTIGRAVITY_API_KEY;
-  const hostApiKey = targetIsRemote ? undefined : process.env.ANTIGRAVITY_API_KEY;
+  const configApiKey = env.ANTIGRAVITY_API_KEY || env.GEMINI_API_KEY || env.GOOGLE_API_KEY;
+  const hostApiKey = targetIsRemote
+    ? undefined
+    : process.env.ANTIGRAVITY_API_KEY || process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
 
   if (isNonEmptyString(configApiKey) || isNonEmptyString(hostApiKey)) {
     return {
       code: "antigravity_api_key_present",
       level: "info",
-      message: "Antigravity API credentials are set.",
-      detail: "Detected in environment variables.",
+      message: "Antigravity API credentials are set for API-key authentication.",
+      detail: isNonEmptyString(configApiKey)
+        ? "Detected in adapter config.env."
+        : "Detected in host environment variables.",
     };
   }
-  
+
+  const adcFlag = (
+    env.AGY_ADC_AUTH ||
+    (targetIsRemote ? "" : process.env.AGY_ADC_AUTH || "")
+  )
+    .trim()
+    .toLowerCase();
+  const adcCredsPath =
+    env.GOOGLE_APPLICATION_CREDENTIALS ||
+    (targetIsRemote ? "" : process.env.GOOGLE_APPLICATION_CREDENTIALS || "");
+  const gcpProject =
+    env.GOOGLE_CLOUD_PROJECT ||
+    (targetIsRemote ? "" : process.env.GOOGLE_CLOUD_PROJECT || "");
+
+  if (
+    adcFlag === "1" ||
+    adcFlag === "true" ||
+    adcFlag === "yes" ||
+    isNonEmptyString(adcCredsPath)
+  ) {
+    return {
+      code: "antigravity_adc_auth_configured",
+      level: "info",
+      message: "Google Cloud Application Default Credentials (ADC) authentication is enabled.",
+      detail: isNonEmptyString(gcpProject)
+        ? `AGY_ADC_AUTH enabled with GOOGLE_CLOUD_PROJECT="${gcpProject.trim()}".`
+        : "AGY_ADC_AUTH / GOOGLE_APPLICATION_CREDENTIALS detected.",
+    };
+  }
+
   return {
     code: "antigravity_api_key_missing",
     level: "info",
-    message: "No explicit ANTIGRAVITY_API_KEY detected. The CLI may use the system keyring.",
-    hint: "If the probe fails, check your API key or run `agy install` via CLI.",
+    message: "No explicit ANTIGRAVITY_API_KEY or AGY_ADC_AUTH detected. Antigravity may still work via subscription login (`agy auth login`).",
+    hint: "If the hello probe fails with an auth error, set ANTIGRAVITY_API_KEY, enable AGY_ADC_AUTH=1, or run `agy auth login`.",
   };
+}
+
+/**
+ * Probes installed Antigravity plugins (`agy plugin list --json`, added in `agy` v1.3.4).
+ *
+ * @param runId - Unique check run identifier.
+ * @param target - Execution target metadata.
+ * @param command - Executable command name or path.
+ * @param cwd - Working directory path.
+ * @param env - Execution environment variables.
+ * @returns An `AdapterEnvironmentCheck` describing installed plugins.
+ */
+export async function probeAntigravityPlugins(
+  runId: string,
+  target: AdapterExecutionTarget | null,
+  command: string,
+  cwd: string,
+  env: Record<string, string>,
+): Promise<AdapterEnvironmentCheck> {
+  try {
+    const proc = await runAdapterExecutionTargetProcess(
+      runId,
+      target,
+      command,
+      ["plugin", "list", "--json"],
+      {
+        cwd,
+        env,
+        timeoutSec: 15,
+        graceSec: 3,
+        onLog: async () => {},
+      },
+    );
+    if ((proc.exitCode ?? 1) === 0 && proc.stdout.trim().length > 0) {
+      try {
+        const parsed = JSON.parse(proc.stdout.trim()) as unknown;
+        const count = Array.isArray(parsed)
+          ? parsed.length
+          : typeof parsed === "object" && parsed !== null && Array.isArray((parsed as any).plugins)
+            ? (parsed as any).plugins.length
+            : 0;
+        return {
+          code: "antigravity_plugins_probed",
+          level: "info",
+          message: `Detected ${count} installed Antigravity plugin(s).`,
+        };
+      } catch {
+        return {
+          code: "antigravity_plugins_probed",
+          level: "info",
+          message: "Antigravity plugin subcommand is available.",
+          detail: firstNonEmptyLine(proc.stdout),
+        };
+      }
+    }
+    return {
+      code: "antigravity_plugins_unavailable",
+      level: "info",
+      message: "Antigravity plugin list returned no active plugins.",
+    };
+  } catch (err) {
+    return {
+      code: "antigravity_plugins_unavailable",
+      level: "info",
+      message: "Skipped Antigravity plugin inspection.",
+      detail: err instanceof Error ? err.message : String(err),
+    };
+  }
 }
 
 /**
@@ -190,9 +304,10 @@ async function performHelloTelemetryProbe(
     return;
   }
 
+  const targetIsRemote = target?.kind === "remote";
   const sandbox = asBoolean(config.sandbox, false);
   const helloProbeTimeoutSec = Math.max(1, asNumber(config.helloProbeTimeoutSec, 60));
-  
+
   const extraArgs = (() => {
     const fromExtraArgs = asStringArray(config.extraArgs);
     if (fromExtraArgs.length > 0) return fromExtraArgs;
@@ -209,7 +324,14 @@ async function performHelloTelemetryProbe(
   const timeoutSecConfig = asNumber(config.timeoutSec, 0) || asNumber(config.timeout, 0);
   const resolved = resolveAgyModelAndEffort(model, rawEffort);
 
-  const args = ["--print", "Respond with hello."];
+  const args = [
+    "--print",
+    "Respond with hello.",
+    "--output-format",
+    "stream-json",
+    "--max-turns",
+    "1",
+  ];
   if (resolved.model) {
     args.push("--model", resolved.model);
   }
@@ -240,68 +362,114 @@ async function performHelloTelemetryProbe(
       timeoutSec: helloProbeTimeoutSec,
       graceSec: 5,
       onLog: async () => {},
+      terminalResultCleanup: {
+        hasTerminalResult: hasAntigravityTerminalResult,
+      },
     },
   );
-  
+
+  const parsedStream = parseAntigravityStreamJson(probe.stdout);
   const detail = summarizeProbeDetail(probe.stdout, probe.stderr);
-  
+
   const authMeta = detectAntigravityAuthRequired({
     stdout: probe.stdout,
     stderr: probe.stderr,
   });
-  
+
   const quotaMeta = detectAntigravityQuotaExhausted({
     stdout: probe.stdout,
     stderr: probe.stderr,
   });
+  const hardQuota = isAntigravityProviderQuotaExhausted({
+    stdout: probe.stdout,
+    stderr: probe.stderr,
+  });
+  const transientUpstream = isAntigravityTransientUpstreamError({
+    stdout: probe.stdout,
+    stderr: probe.stderr,
+  });
 
-  if (quotaMeta.exhausted) {
-    checks.push({
-      code: "antigravity_hello_probe_quota_exhausted",
-      level: "warn",
-      message: "Antigravity API key is over quota.",
-      ...(detail ? { detail } : {}),
-      hint: "Check usage/billing, then retry the probe.",
-    });
-  } else if (probe.timedOut) {
+  if (probe.timedOut) {
     checks.push({
       code: "antigravity_hello_probe_timed_out",
       level: "warn",
       message: "Antigravity hello probe timed out.",
-      hint: "Retry the probe. If this persists, verify Antigravity can run manually.",
+      hint: "Retry the probe. If this persists, verify Antigravity can run `agy --print \"Respond with hello.\"` manually.",
     });
-  } else if ((probe.exitCode ?? 1) === 0) {
-    const summary = probe.stdout.trim().toLowerCase();
-    const hasHello = summary.includes("hello") || summary.includes("olá");
-    
+    return;
+  }
+
+  if (authMeta.requiresAuth) {
+    checks.push({
+      code: "antigravity_hello_probe_auth_required",
+      level: targetIsRemote ? "error" : "warn",
+      ...(targetIsRemote ? { reasonCode: "adapter_auth_missing" as const } : {}),
+      message: "Antigravity CLI is installed, but authentication is not ready.",
+      ...(detail ? { detail } : {}),
+      hint: authMeta.loginUrl
+        ? `Complete authentication at ${authMeta.loginUrl} or configure ANTIGRAVITY_API_KEY / AGY_ADC_AUTH=1.`
+        : "Run `agy auth login` or configure ANTIGRAVITY_API_KEY / AGY_ADC_AUTH=1, then retry the probe.",
+    });
+    return;
+  }
+
+  if (hardQuota || quotaMeta.exhausted) {
+    const retryNotBefore = extractAntigravityRetryNotBefore({
+      stdout: probe.stdout,
+      stderr: probe.stderr,
+    });
+    checks.push({
+      code: "antigravity_hello_probe_quota_exhausted",
+      level: "warn",
+      ...({ reasonCode: "usage_limited" } as Record<string, unknown>),
+      message: "Antigravity CLI is authenticated, but usage quota or AI credits are currently exhausted.",
+      ...(detail ? { detail } : {}),
+      hint: retryNotBefore
+        ? `Quota resets after ${retryNotBefore}. Check usage/billing or switch models, then retry.`
+        : "Check usage/billing (`agy -p \"/usage\" --output-format json`), then retry the probe.",
+    });
+    return;
+  }
+
+  if ((probe.exitCode ?? 1) !== 0 && transientUpstream) {
+    checks.push({
+      code: "antigravity_hello_probe_transient_upstream",
+      level: "warn",
+      message: "Antigravity hello probe encountered a transient upstream service error.",
+      ...(detail ? { detail } : {}),
+      hint: "The upstream model service is temporarily overloaded or unreachable. Retry shortly.",
+    });
+    return;
+  }
+
+  if ((probe.exitCode ?? 1) === 0) {
+    const candidateText = (parsedStream.summary || probe.stdout).trim();
+    const summaryLower = candidateText.toLowerCase();
+    const hasHello = /\bhello\b|\bol[áa]\b/.test(summaryLower);
+
     checks.push({
       code: hasHello ? "antigravity_hello_probe_passed" : "antigravity_hello_probe_unexpected_output",
       level: hasHello ? "info" : "warn",
       message: hasHello
         ? "Antigravity hello probe succeeded."
-        : "Antigravity probe ran but did not return `hello` or `olá` as expected.",
-      ...(summary ? { detail: summary.slice(0, 240) } : {}),
+        : "Antigravity probe ran but did not return `hello` as expected.",
+      ...(candidateText ? { detail: candidateText.replace(/\s+/g, " ").trim().slice(0, 240) } : {}),
     });
-  } else if (authMeta.requiresAuth) {
-    checks.push({
-      code: "antigravity_hello_probe_auth_required",
-      level: "warn",
-      message: "Antigravity CLI is installed, but authentication is missing.",
-      ...(detail ? { detail } : {}),
-    });
-  } else {
-    checks.push({
-      code: "antigravity_hello_probe_failed",
-      level: "error",
-      message: "Antigravity hello probe failed.",
-      ...(detail ? { detail } : {}),
-    });
+    return;
   }
+
+  checks.push({
+    code: "antigravity_hello_probe_failed",
+    level: "error",
+    message: "Antigravity hello probe failed.",
+    ...(detail ? { detail } : {}),
+    hint: "Run `agy --print \"Respond with hello.\"` manually in this working directory to inspect the full error.",
+  });
 }
 
 /**
  * Diagnostic pipeline testing the Antigravity installation and credentials environment.
- * Validates executable presence, path resolution, keyring keys, and live API connectivity.
+ * Validates executable presence, path resolution, keyring/ADC keys, and live API connectivity.
  *
  * @param ctx - The environment validation context provided by Paperclip.
  * @returns Formatted environment probe results summary.
@@ -315,10 +483,8 @@ export async function testEnvironment(
   const target = ctx.executionTarget ?? null;
   const targetIsRemote = target?.kind === "remote";
   const cwd = resolveAdapterExecutionTargetCwd(target, asString(config.cwd, ""), process.cwd());
-  const targetLabel = targetIsRemote
-    ? ctx.environmentName ?? describeAdapterExecutionTarget(target)
-    : null;
-  
+  const targetLabel = ctx.environmentName ?? describeAdapterExecutionTarget(target);
+
   const runId = `antigravity-envtest-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 
   if (targetLabel) {
@@ -333,9 +499,21 @@ export async function testEnvironment(
   const cwdCheck = await checkWorkingDirectory(runId, target, cwd);
   checks.push(cwdCheck);
 
-  // Step 2: Build execution environment variable mappings
+  // Step 2: Build execution environment variable mappings (including ~/.local/bin in PATH)
   const env = resolveExecutionEnvironment(config);
-  const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
+  const effectiveEnv = Object.fromEntries(
+    Object.entries({ ...process.env, ...env }).filter(
+      (entry): entry is [string, string] => typeof entry[1] === "string",
+    ),
+  );
+  const runtimeEnv = Object.fromEntries(
+    Object.entries(ensureAntigravityPathInEnv(effectiveEnv)).filter(
+      (entry): entry is [string, string] => typeof entry[1] === "string",
+    ),
+  );
+  if (!targetIsRemote && runtimeEnv.PATH) {
+    env.PATH = runtimeEnv.PATH;
+  }
 
   // Step 3: Handle sandbox execution installs if sandbox configurations are active
   const installCheck = await maybeRunSandboxInstallCommand({
@@ -349,7 +527,7 @@ export async function testEnvironment(
   if (installCheck) {
     checks.push(installCheck);
   }
-  
+
   // Step 4: Verify that the main command executable is resolvable and accessible in PATH
   let commandResolvable = false;
   try {
@@ -369,7 +547,7 @@ export async function testEnvironment(
     });
   }
 
-  // Step 5: Check configured API keys and authentication contexts
+  // Step 5: Check configured API keys and ADC authentication contexts
   const selectedModel = asString(config.model, DEFAULT_ANTIGRAVITY_LOCAL_MODEL).trim();
   const selectedEffort = (
     asString(config.thinkingEffort, "") ||
@@ -378,7 +556,7 @@ export async function testEnvironment(
     asString(config.reasoningEffort, "")
   ).trim();
   const selectedTimeout = asNumber(config.timeoutSec, 0) || asNumber(config.timeout, 0);
-  const credsCheck = checkApiCredentials(env, targetIsRemote, selectedModel);
+  const credsCheck = checkApiCredentials(env, targetIsRemote);
   checks.push(credsCheck);
 
   // Step 6: Report configured model selection diagnostic check
@@ -392,8 +570,14 @@ export async function testEnvironment(
       : `Pinned model: ${selectedModel}`,
   });
 
-  // Step 7: Spawn live "hello" telemetry probe if directories and executables resolved correctly
+  // Step 7: Optional plugin inspection (`agy plugin list --json`, added in v1.3.4) when config.probePlugins is enabled
   const canRunProbe = cwdCheck.code === "antigravity_cwd_valid" && commandResolvable;
+  if (canRunProbe && asBoolean(config.probePlugins, false) && commandLooksLike(command, "agy")) {
+    const pluginCheck = await probeAntigravityPlugins(runId, target, command, cwd, env);
+    checks.push(pluginCheck);
+  }
+
+  // Step 8: Spawn live "hello" telemetry probe if directories and executables resolved correctly
   if (canRunProbe) {
     await performHelloTelemetryProbe(runId, target, command, cwd, env, config, checks);
   }

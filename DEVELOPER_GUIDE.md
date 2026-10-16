@@ -45,11 +45,14 @@ Paperclip interacts with the adapter through the `ServerAdapterModule` interface
 | Contract Element | Purpose | Implementation Pattern |
 |---|---|---|
 | `models` | Static baseline array of model definitions | Fallback model list bundled with the adapter release. |
-| `listModels()` | Dynamic model discovery hook | Queries live runtime engine (`agy models`) with TTL caching. |
+| `listModels()` | Dynamic model discovery hook | Queries live runtime engine (`agy models --output-format json`) with TTL caching and plain-text fallback. |
 | `refreshModels()` | Cache-bypassing discovery hook | Forces immediate live query to register newly released models. |
-| `modelProfiles` | Pre-configured cost/tier lanes | Defines default assignments for standard profiles (e.g. `cheap`). |
-| `execute(ctx)` | Main agent heartbeat execution | Compiles prompt, workspace bindings, model, and effort into CLI flags. |
-| `testEnvironment(ctx)` | Diagnostic self-test probe | Validates command path, permissions, model flags, and API keys. |
+| `modelProfiles` | Pre-configured cost/tier lanes | Defines default assignments for standard profiles (`cheap: gemini-3-flash-agent`). |
+| `getConfigSchema()` | Declarative configuration schema | Exposes structured `AdapterConfigSchema` fields (model, effort, mode, agent, jsonSchema, sandbox, timeoutSec). |
+| `sessionCodec` | Session state serializer/deserializer | Serializes `sessionId`, `cwd`, `workspaceId`, `repoUrl`, `repoRef`, `promptBundleKey`, and `remoteExecution`. |
+| `getQuotaWindows()` | Live quota & AI credits polling | Executes `agy -p "/usage" --output-format json` and returns `ProviderQuotaResult` windows. |
+| `execute(ctx)` | Main agent heartbeat execution | Compiles prompt, workspace bindings, model, effort, session recovery, and structured error taxonomy. |
+| `testEnvironment(ctx)` | Diagnostic self-test probe | Validates command path, permissions, model flags, API/ADC keys, optional plugins, and `stream-json` hello probe. |
 | `listSkills(ctx)` | Skill discovery hook | Lists available and linked Paperclip skills in `~/.gemini/skills`. |
 | `syncSkills(ctx, skills)` | Skill synchronization hook | Creates/prunes persistent symlinks to Paperclip company catalog skills. |
 | `supportsInstructionsBundle` | Managed instructions capability flag | Enables Paperclip instructions bundle generation and Web UI editor. |

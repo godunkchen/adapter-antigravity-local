@@ -671,6 +671,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       (entry): entry is [string, string] => typeof entry[1] === "string",
     ),
   );
+  if (!executionTargetIsRemote && runtimeEnv.PATH) {
+    env.PATH = runtimeEnv.PATH;
+  }
 
   const processTimeoutSec = resolveAdapterExecutionTargetTimeoutSec(executionTarget, configuredTimeoutSec);
   const graceSec = asNumber(config.graceSec, 20);

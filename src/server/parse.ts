@@ -1,7 +1,9 @@
 /**
  * @fileoverview Log parsers and telemetry analysis helpers for the Antigravity local CLI execution.
- * Extracts specific execution failures, rate limits, session statuses, and authentication triggers from stdout/stderr.
- * 
+ * Extracts specific execution failures, rate limits, quota windows, session statuses, model errors,
+ * refusals, retry timestamps, and authentication triggers from stdout/stderr.
+ * Aligned with `@paperclipai/adapter-claude-local`.
+ *
  * @copyright Antigravity Adapter Contributors
  * @license MIT
  */
@@ -20,47 +22,80 @@ function combineAndCleanLines(stdout: string, stderr: string): string[] {
   return parseMultilineLines(`${stdout}\n${stderr}`);
 }
 
-/** Regex pattern to identify CLI authentication failures or key missing errors. */
-const AGY_AUTH_REQUIRED_RE = /(?:not\s+authenticated|please\s+authenticate|api[_ ]?key\s+(?:required|missing|invalid)|authentication\s+required|unauthorized|invalid\s+credentials|not\s+logged\s+in|login\s+required|run\s+`?agy\s+auth(?:\s+login)?`?\s+first)/i;
+/** Regex pattern to identify CLI authentication failures, missing API keys, or GCP ADC errors. */
+const AGY_AUTH_REQUIRED_RE =
+  /(?:not\s+authenticated|please\s+authenticate|api[_ ]?key\s+(?:required|missing|invalid)|authentication\s+required|unauthorized|invalid\s+credentials|not\s+logged\s+in|login\s+required|run\s+`?agy\s+auth(?:\s+login)?`?\s+first|could\s+not\s+find\s+default\s+credentials|application\s+default\s+credentials|gcloud\s+auth\s+application-default\s+login|account\s+verification\s+required|sign-in\s+error)/i;
 
-/** Regex pattern to identify API quota exhaustions, billing issues, or rate limits. */
-const AGY_QUOTA_EXHAUSTED_RE = /(?:resource_exhausted|quota|rate[-\s]?limit|too many requests|\b429\b|billing details)/i;
+/** Regex pattern to identify API quota exhaustions, billing issues, AI credits, or rate limits. */
+const AGY_QUOTA_EXHAUSTED_RE =
+  /(?:resource_exhausted|quota|rate[-\s]?limit|too many requests|\b429\b|billing details|ai\s+credits\s+balance\s+is\s+too\s+low|insufficient\s+credits|out\s+of\s+credits|weekly\s+limit|five\s+hour\s+limit|5-hour\s+limit|spending\s+cap)/i;
+
+/** Regex pattern to distinguish hard provider quota/credits/billing exhaustion from transient per-minute rate limits. */
+const AGY_HARD_PROVIDER_QUOTA_RE =
+  /(?:quota\s+exceeded|ai\s+credits\s+balance\s+is\s+too\s+low|insufficient\s+credits|out\s+of\s+credits|weekly\s+limit|five\s+hour\s+limit|5-hour\s+limit|billing\s+details|spending\s+cap|plan\s+limit|exceeded\s+your\s+current\s+quota)/i;
+
+/** Regex pattern to identify transient upstream errors (429 rate limits, 502/503/504/529 overload, or network resets). */
+const AGY_TRANSIENT_UPSTREAM_RE =
+  /(?:rate[-\s]?limit|too many requests|\b429\b|resource_exhausted|\b502\b|\b503\b|\b504\b|\b529\b|overloaded|service\s+unavailable|bad\s+gateway|gateway\s+timeout|temporarily\s+unavailable|econnreset|etimedout|enotfound|eai_again|socket\s+hang\s+up|connection\s+reset|upstream\s+error)/i;
+
+/** Regex pattern to identify unknown or unsupported model errors. */
+const AGY_MODEL_NOT_FOUND_RE =
+  /(?:model\s+[^\n]*?\s+not\s+found|unknown\s+model|invalid\s+model|unsupported\s+model|model_not_found|\b404\b[^\n]*model)/i;
+
+/** Regex pattern to extract HTTP/HTTPS URLs from auth/verification error messages. */
+const URL_IN_TEXT_RE = /https?:\/\/[^\s"'<>)\]]+/i;
 
 /**
  * Checks whether the CLI process execution failed because the requested conversation
- * session was unknown, deleted, or otherwise not found.
+ * session was unknown, deleted, corrupted, or contained unreadable media/steps
+ * (such as truncated WebM/MP4/MOV attachments or missing conversation steps in `agy` v1.3.4).
  *
  * @param stdout - The process stdout stream content.
  * @param stderr - The process stderr stream content.
- * @returns True if an unknown session error signature is matched.
+ * @returns True if an unknown or unrecoverable session error signature is matched.
  */
 export function isAntigravityUnknownSessionError(stdout: string, stderr: string): boolean {
   const haystack = combineAndCleanLines(stdout, stderr).join("\n");
 
-  return /unknown\s+conversation|conversation\s+.*\s+not\s+found|resume\s+.*\s+not\s+found|cannot\s+resume|failed\s+to\s+resume/i.test(
+  return /unknown\s+(?:conversation|session)|(?:conversation|session)\s+.*\s+not\s+found|no\s+conversation\s+found|resume\s+.*\s+not\s+found|cannot\s+resume|failed\s+to\s+resume|corrupt(?:ed)?\s+conversation|missing\s+step|could\s+not\s+process\s+(?:image|video|audio|media)|truncated\s+(?:webm|mp4|mov|media)|previous_message_id/i.test(
     haystack,
   );
 }
 
 /**
+ * Extracts a login, verification, or appeal URL from CLI stdout/stderr if present.
+ *
+ * @param stdout - Process stdout stream content.
+ * @param stderr - Process stderr stream content.
+ * @returns Extracted URL or null.
+ */
+export function extractAntigravityLoginUrl(stdout: string, stderr: string): string | null {
+  const combined = `${stdout}\n${stderr}`;
+  const match = combined.match(URL_IN_TEXT_RE);
+  if (!match || !match[0]) return null;
+  return match[0].replace(/[.,;:!?]+$/, "");
+}
+
+/**
  * Probes stdout/stderr output lines for missing authentication configurations.
- * Allows the orchestrator to automatically flag required interactive auth.
+ * Allows the orchestrator to automatically flag required interactive auth and surface login/verification URLs.
  *
  * @param input - Object containing stdout and stderr streams.
- * @returns Object indicating if authentication is required.
+ * @returns Object indicating if authentication is required (and `loginUrl` when present).
  */
 export function detectAntigravityAuthRequired(input: {
   stdout: string;
   stderr: string;
-}): { requiresAuth: boolean } {
+}): { requiresAuth: boolean; loginUrl?: string } {
   const messages = combineAndCleanLines(input.stdout, input.stderr);
   const requiresAuth = messages.some((line) => AGY_AUTH_REQUIRED_RE.test(line));
-  return { requiresAuth };
+  const loginUrl = requiresAuth ? extractAntigravityLoginUrl(input.stdout, input.stderr) : null;
+  return loginUrl ? { requiresAuth, loginUrl } : { requiresAuth };
 }
 
 /**
- * Checks if the Antigravity execution failed because of billing quotas, 
- * rate-limits (HTTP 429), or API resource limit exhaustion.
+ * Checks if the Antigravity execution failed because of billing quotas,
+ * rate-limits (HTTP 429), AI credits exhaustion, or API resource limit exhaustion.
  *
  * @param input - Object containing stdout and stderr streams.
  * @returns Object indicating if quota is exhausted.
@@ -75,26 +110,159 @@ export function detectAntigravityQuotaExhausted(input: {
 }
 
 /**
+ * Distinguishes hard provider quota / AI credits / billing exhaustion (`errorCode: "provider_quota"`)
+ * from transient per-minute rate limits or upstream overload.
+ */
+export function isAntigravityProviderQuotaExhausted(input: {
+  stdout: string;
+  stderr: string;
+}): boolean {
+  const messages = combineAndCleanLines(input.stdout, input.stderr);
+  return messages.some((line) => AGY_HARD_PROVIDER_QUOTA_RE.test(line));
+}
+
+/**
+ * Detects transient upstream failures (429 rate limits that are not hard billing/weekly caps,
+ * 502/503/504/529 server overload, or transient network resets).
+ */
+export function isAntigravityTransientUpstreamError(input: {
+  stdout: string;
+  stderr: string;
+}): boolean {
+  if (isAntigravityProviderQuotaExhausted(input)) {
+    return false;
+  }
+  const messages = combineAndCleanLines(input.stdout, input.stderr);
+  return messages.some((line) => AGY_TRANSIENT_UPSTREAM_RE.test(line));
+}
+
+/**
+ * Detects whether the CLI failed because the requested model ID was not found or is unsupported.
+ */
+export function isAntigravityModelNotFoundError(input: {
+  stdout: string;
+  stderr: string;
+}): boolean {
+  const messages = combineAndCleanLines(input.stdout, input.stderr);
+  return messages.some((line) => AGY_MODEL_NOT_FOUND_RE.test(line));
+}
+
+/**
+ * Detects whether the model terminated with a structured safety/policy refusal.
+ */
+export function isAntigravityRefusalError(input: {
+  stdout: string;
+  stderr: string;
+}): boolean {
+  const combined = `${input.stdout}\n${input.stderr}`;
+  for (const rawLine of combined.split(/\r?\n/)) {
+    const trimmed = rawLine.trim();
+    if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) continue;
+    try {
+      const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+      const resultObj =
+        typeof parsed.result === "object" && parsed.result !== null
+          ? (parsed.result as Record<string, unknown>)
+          : parsed;
+      const candidates = [
+        parsed.subtype,
+        parsed.stop_reason,
+        parsed.stopReason,
+        parsed.error_code,
+        parsed.errorCode,
+        resultObj.subtype,
+        resultObj.stop_reason,
+        resultObj.stopReason,
+        resultObj.error_code,
+        resultObj.errorCode,
+      ]
+        .filter((v): v is string => typeof v === "string")
+        .map((v) => v.trim().toLowerCase());
+      if (candidates.some((c) => c === "refusal" || c === "model_refusal")) {
+        return true;
+      }
+    } catch {
+      // Ignore malformed JSON
+    }
+  }
+  return false;
+}
+
+/**
+ * Extracts an ISO-8601 `retryNotBefore` timestamp from quota/rate-limit error messages or JSON payloads.
+ *
+ * @param input - Object containing stdout and stderr streams.
+ * @param now - Reference date for relative durations (defaults to `new Date()`).
+ * @returns ISO-8601 timestamp string or null.
+ */
+export function extractAntigravityRetryNotBefore(
+  input: { stdout: string; stderr: string },
+  now = new Date(),
+): string | null {
+  const combined = `${input.stdout}\n${input.stderr}`;
+
+  // 1. Check explicit ISO-8601 timestamp in JSON or text (e.g. reset_time: "2026-10-23T04:15:53Z" or "resets at 2026-10-16T09:15:53Z")
+  const isoMatch = combined.match(
+    /(?:reset_time|resets?\s+at|retry[_ -]?after|try\s+again\s+at)["'\s:=]+(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z)/i,
+  );
+  if (isoMatch && isoMatch[1]) {
+    const ts = Date.parse(isoMatch[1]);
+    if (!Number.isNaN(ts)) {
+      return new Date(ts).toISOString();
+    }
+  }
+
+  // 2. Check relative hours/minutes (e.g. "refresh in 4 hours, 56 minutes" or "in 2 hours")
+  const relHoursMinutes = combined.match(
+    /(?:refresh|reset|retry|try\s+again)\s+in\s+(?:(\d+)\s+days?,\s*)?(?:(\d+)\s+hours?(?:,\s*)?)?(?:(\d+)\s+minutes?)?/i,
+  );
+  if (relHoursMinutes && (relHoursMinutes[1] || relHoursMinutes[2] || relHoursMinutes[3])) {
+    const days = Number.parseInt(relHoursMinutes[1] || "0", 10);
+    const hours = Number.parseInt(relHoursMinutes[2] || "0", 10);
+    const minutes = Number.parseInt(relHoursMinutes[3] || "0", 10);
+    const deltaMs = ((days * 24 + hours) * 60 + minutes) * 60_000;
+    if (deltaMs > 0) {
+      return new Date(now.getTime() + deltaMs).toISOString();
+    }
+  }
+
+  // 3. Check relative seconds (e.g. "retry after 45s" or "retry in 30 seconds")
+  const relSeconds = combined.match(/(?:retry|reset|try\s+again)\s+(?:after|in)\s+(\d+)\s*s(?:ec(?:ond)?s?)?\b/i);
+  if (relSeconds && relSeconds[1]) {
+    const seconds = Number.parseInt(relSeconds[1], 10);
+    if (Number.isFinite(seconds) && seconds > 0) {
+      return new Date(now.getTime() + seconds * 1000).toISOString();
+    }
+  }
+
+  return null;
+}
+
+/**
  * Detects if the run hit the safety maximum agent turn thresholds.
- * Evaluates the exit code (typically code 53) or searches stderr logs.
+ * Evaluates the exit code (typically code 53), structured JSON subtypes, or stderr logs.
  *
  * @param exitCode - Optional exit code returned by the command execution.
  * @param stderr - Optional error outputs.
+ * @param stdout - Optional stdout outputs for structured JSON check.
  * @returns True if safety thresholds or maximum turns limit was crossed.
  */
 export function isAntigravityTurnLimitResult(
   exitCode?: number | null,
-  stderr?: string
+  stderr?: string,
+  stdout?: string,
 ): boolean {
   if (exitCode === 53) {
     return true;
   }
-  
-  if (stderr) {
-    const lowerStderr = stderr.toLowerCase();
-    if (lowerStderr.includes("turn_limit") || lowerStderr.includes("max_turns")) {
-      return true;
-    }
+
+  const combined = `${stderr || ""}\n${stdout || ""}`.toLowerCase();
+  if (
+    combined.includes("turn_limit") ||
+    combined.includes("max_turns") ||
+    combined.includes("error_max_turns")
+  ) {
+    return true;
   }
 
   return false;
@@ -127,7 +295,7 @@ export function describeAntigravityFailure(stdout: string, stderr: string): stri
 export function extractAntigravitySessionId(stdout: string, stderr: string): string | null {
   const combined = `${stdout}\n${stderr}`;
   const lines = combined.split(/\r?\n/);
-  
+
   for (const line of lines) {
     const trimmed = line.trim();
     if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
@@ -175,12 +343,42 @@ export interface AntigravityExecutionMetrics {
     outputTokens: number;
     cachedInputTokens: number;
   };
+  usageBasis: "per_run";
   costUsd: number | null;
   response: string | null;
+  resultJson: Record<string, unknown> | null;
+  isError: boolean;
 }
 
 /**
- * Extracts token usage, cost metrics, and response summary from NDJSON events or stdout.
+ * Detects whether stdout contains a terminal NDJSON result event from `agy --output-format stream-json`.
+ * Used by `terminalResultCleanup` so lingering child processes don't hang the heartbeat after completion.
+ */
+export function hasAntigravityTerminalResult(output: { stdout: string; stderr: string }): boolean {
+  const lines = (output.stdout || "").split(/\r?\n/);
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    const trimmed = lines[i].trim();
+    if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) continue;
+    try {
+      const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+      if (
+        parsed.event === "result" ||
+        parsed.type === "result" ||
+        (typeof parsed.status === "string" &&
+          (parsed.status === "SUCCESS" || parsed.status === "ERROR" || parsed.status === "FAILED") &&
+          typeof parsed.usage === "object")
+      ) {
+        return true;
+      }
+    } catch {
+      // Ignore partial or non-JSON line
+    }
+  }
+  return false;
+}
+
+/**
+ * Extracts token usage, cost metrics, terminal result JSON, and response summary from NDJSON events or stdout.
  *
  * @param stdout - Process stdout stream content.
  * @param stderr - Process stderr stream content.
@@ -193,8 +391,11 @@ export function extractAntigravityExecutionMetrics(stdout: string, stderr: strin
       outputTokens: 0,
       cachedInputTokens: 0,
     },
+    usageBasis: "per_run",
     costUsd: null,
     response: null,
+    resultJson: null,
+    isError: false,
   };
 
   const combined = `${stdout}\n${stderr}`;
@@ -206,10 +407,24 @@ export function extractAntigravityExecutionMetrics(stdout: string, stderr: strin
       try {
         const parsed = JSON.parse(trimmed);
 
+        if (parsed.event === "result" || parsed.type === "result" || typeof parsed.status === "string") {
+          metrics.resultJson = parsed;
+          if (
+            parsed.is_error === true ||
+            parsed.result?.is_error === true ||
+            parsed.status === "ERROR" ||
+            parsed.status === "FAILED"
+          ) {
+            metrics.isError = true;
+          }
+        }
+
         if (parsed.event === "result" && parsed.result?.response) {
           metrics.response = String(parsed.result.response);
         } else if (parsed.response && typeof parsed.response === "string") {
           metrics.response = parsed.response;
+        } else if (parsed.type === "result" && typeof parsed.result === "string") {
+          metrics.response = parsed.result;
         }
 
         const usageObj = parsed.result?.usage || parsed.step_update?.usage || parsed.usage;
@@ -243,4 +458,16 @@ export function extractAntigravityExecutionMetrics(stdout: string, stderr: strin
   }
 
   return metrics;
+}
+
+/**
+ * Alias for structured stream-JSON parsing used by environment probes and execution analysis.
+ */
+export function parseAntigravityStreamJson(stdout: string, stderr = "") {
+  const sessionId = extractAntigravitySessionId(stdout, stderr);
+  const metrics = extractAntigravityExecutionMetrics(stdout, stderr);
+  return {
+    sessionId,
+    ...metrics,
+  };
 }

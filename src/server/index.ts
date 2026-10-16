@@ -10,6 +10,24 @@ export { execute } from "./execute.js";
 export { listAntigravitySkills, syncAntigravitySkills } from "./skills.js";
 export { testEnvironment } from "./test.js";
 export { getConfigSchema } from "./config-schema.js";
+export { getQuotaWindows, parseAgyUsageQuotaOutput } from "./quota.js";
+export {
+  isAntigravityUnknownSessionError,
+  extractAntigravityLoginUrl,
+  detectAntigravityAuthRequired,
+  detectAntigravityQuotaExhausted,
+  isAntigravityProviderQuotaExhausted,
+  isAntigravityTransientUpstreamError,
+  isAntigravityModelNotFoundError,
+  isAntigravityRefusalError,
+  extractAntigravityRetryNotBefore,
+  isAntigravityTurnLimitResult,
+  describeAntigravityFailure,
+  extractAntigravitySessionId,
+  hasAntigravityTerminalResult,
+  extractAntigravityExecutionMetrics,
+  parseAntigravityStreamJson,
+} from "./parse.js";
 export {
   ensureAntigravityPathInEnv,
   parseAgyCliVersion,
@@ -75,12 +93,26 @@ export function parseSessionParams(record: Record<string, unknown>): Antigravity
     readNonEmptyString(record.repoRef) ??
     readNonEmptyString(record.repo_ref);
 
+  const promptBundleKey =
+    readNonEmptyString(record.promptBundleKey) ??
+    readNonEmptyString(record.prompt_bundle_key);
+
+  const rawRemoteExecution = record.remoteExecution ?? record.remote_execution;
+  const remoteExecution =
+    typeof rawRemoteExecution === "object" &&
+    rawRemoteExecution !== null &&
+    !Array.isArray(rawRemoteExecution)
+      ? (rawRemoteExecution as Record<string, unknown>)
+      : undefined;
+
   return {
     sessionId,
     ...(cwd ? { cwd } : {}),
     ...(workspaceId ? { workspaceId } : {}),
     ...(repoUrl ? { repoUrl } : {}),
     ...(repoRef ? { repoRef } : {}),
+    ...(promptBundleKey ? { promptBundleKey } : {}),
+    ...(remoteExecution ? { remoteExecution } : {}),
   };
 }
 

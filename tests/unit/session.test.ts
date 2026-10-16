@@ -109,10 +109,27 @@ describe("session codec and params parser", () => {
     });
 
     it("gets the display ID correctly", () => {
-      expect(sessionCodec.getDisplayId(null)).toBeNull();
-      expect(sessionCodec.getDisplayId({ sessionId: "disp-1" })).toBe("disp-1");
-      expect(sessionCodec.getDisplayId({ session_id: "disp-2" })).toBe("disp-2");
-      expect(sessionCodec.getDisplayId({ sessionID: "disp-3" })).toBe("disp-3");
+      expect(sessionCodec.getDisplayId!(null)).toBeNull();
+      expect(sessionCodec.getDisplayId!({ sessionId: "disp-1" })).toBe("disp-1");
+      expect(sessionCodec.getDisplayId!({ session_id: "disp-2" })).toBe("disp-2");
+      expect(sessionCodec.getDisplayId!({ sessionID: "disp-3" })).toBe("disp-3");
+    });
+
+    it("preserves promptBundleKey and remoteExecution across serialize/deserialize and registers on createServerAdapter()", async () => {
+      const input = {
+        sessionId: "sess-bundle-1",
+        cwd: "/workspace",
+        promptBundleKey: "sha256-abc123",
+        remoteExecution: { kind: "remote", transport: "ssh", remoteCwd: "/remote/work" },
+      };
+      const deserialized = sessionCodec.deserialize(input);
+      expect(deserialized).toEqual(input);
+      expect(sessionCodec.serialize(deserialized)).toEqual(input);
+
+      const { createServerAdapter } = await import("../../src/index.js");
+      const adapter = createServerAdapter();
+      expect(adapter.sessionCodec).toBe(sessionCodec);
+      expect(typeof adapter.getQuotaWindows).toBe("function");
     });
   });
 });

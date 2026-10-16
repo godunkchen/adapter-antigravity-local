@@ -1,5 +1,13 @@
 import { type ServerAdapterModule } from "@paperclipai/adapter-utils";
-import { execute, testEnvironment, listModels, refreshModels, getConfigSchema } from "./server/index.js";
+import {
+  execute,
+  testEnvironment,
+  listModels,
+  refreshModels,
+  getConfigSchema,
+  getQuotaWindows,
+  sessionCodec,
+} from "./server/index.js";
 import { listAntigravitySkills, syncAntigravitySkills } from "./server/skills.js";
 import type { AntigravityModelDefinition, AntigravityModelProfileDefinition } from "./types.js";
 
@@ -94,11 +102,13 @@ export function createServerAdapter(): ServerAdapterModule {
     type,
     execute,
     testEnvironment,
+    sessionCodec,
     models,
     listModels,
     refreshModels,
     modelProfiles,
     getConfigSchema,
+    getQuotaWindows,
     listSkills: listAntigravitySkills,
     syncSkills: syncAntigravitySkills,
     supportsInstructionsBundle: true,

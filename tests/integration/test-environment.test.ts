@@ -243,9 +243,9 @@ describe("testEnvironment probe pipeline", () => {
   });
 
   /**
-   * Scenario: Stream-JSON hello probe output & --max-turns 1 flags.
+   * Scenario: Stream-JSON hello probe output & --output-format stream-json flags.
    */
-  it("parses stream-json hello probe output and passes --output-format stream-json --max-turns 1", async () => {
+  it("parses stream-json hello probe output and passes --output-format stream-json", async () => {
     runAdapterExecutionTargetProcess.mockResolvedValueOnce({
       exitCode: 0,
       signal: null,
@@ -273,8 +273,7 @@ describe("testEnvironment probe pipeline", () => {
     const callArgs = (runAdapterExecutionTargetProcess.mock.calls[0] as unknown as [string, unknown, string, string[]])[3];
     expect(callArgs).toContain("--output-format");
     expect(callArgs).toContain("stream-json");
-    expect(callArgs).toContain("--max-turns");
-    expect(callArgs).toContain("1");
+    expect(callArgs).not.toContain("--max-turns");
   });
 
   /**

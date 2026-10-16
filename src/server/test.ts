@@ -329,8 +329,6 @@ async function performHelloTelemetryProbe(
     "Respond with hello.",
     "--output-format",
     "stream-json",
-    "--max-turns",
-    "1",
   ];
   if (resolved.model) {
     args.push("--model", resolved.model);

@@ -32,7 +32,7 @@ const AGY_QUOTA_EXHAUSTED_RE =
 
 /** Regex pattern to distinguish hard provider quota/credits/billing exhaustion from transient per-minute rate limits. */
 const AGY_HARD_PROVIDER_QUOTA_RE =
-  /(?:quota\s+exceeded|ai\s+credits\s+balance\s+is\s+too\s+low|insufficient\s+credits|out\s+of\s+credits|weekly\s+limit|five\s+hour\s+limit|5-hour\s+limit|billing\s+details|spending\s+cap|plan\s+limit|exceeded\s+your\s+current\s+quota)/i;
+  /(?:quota\s+(?:exceeded|exhausted)|ai\s+credits\s+balance\s+is\s+too\s+low|insufficient\s+credits|out\s+of\s+credits|weekly\s+limit|five\s+hour\s+limit|5-hour\s+limit|billing\s+details|spending\s+cap|plan\s+limit|exceeded\s+your\s+current\s+quota)/i;
 
 /** Regex pattern to identify transient upstream errors (429 rate limits, 502/503/504/529 overload, or network resets). */
 const AGY_TRANSIENT_UPSTREAM_RE =
@@ -40,7 +40,7 @@ const AGY_TRANSIENT_UPSTREAM_RE =
 
 /** Regex pattern to identify unknown or unsupported model errors. */
 const AGY_MODEL_NOT_FOUND_RE =
-  /(?:model\s+[^\n]*?\s+not\s+found|unknown\s+model|invalid\s+model|unsupported\s+model|model_not_found|\b404\b[^\n]*model)/i;
+  /(?:model\s+[^\n]*?\s+(?:not\s+found|is\s+not\s+available)|unknown\s+model|invalid\s+model|unsupported\s+model|model_not_found|\b404\b[^\n]*model)/i;
 
 /** Regex pattern to extract HTTP/HTTPS URLs from auth/verification error messages. */
 const URL_IN_TEXT_RE = /https?:\/\/[^\s"'<>)\]]+/i;

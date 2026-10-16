@@ -1,7 +1,9 @@
+import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
+  AdapterBillingType,
   AdapterExecutionContext,
   AdapterExecutionResult,
   AdapterAgent,
@@ -32,7 +34,6 @@ import {
   buildInvocationEnvForLogs,
   ensureAbsoluteDirectory,
   joinPromptSections,
-  ensurePathInEnv,
   refreshPaperclipWorkspaceEnvForExecution,
   readPaperclipIssueWorkModeFromContext,
   readPaperclipRuntimeSkillEntries,
@@ -42,6 +43,7 @@ import {
   renderPaperclipWakePrompt,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
 } from "@paperclipai/adapter-utils/server-utils";
+import { ensureAntigravityPathInEnv } from "./cli-capabilities.js";
 import {
   resolveAntigravitySkillsHome,
   ensureAntigravitySkillsInjected,
@@ -49,13 +51,118 @@ import {
 } from "./skills.js";
 import { DEFAULT_ANTIGRAVITY_LOCAL_MODEL, SANDBOX_INSTALL_COMMAND } from "../index.js";
 import {
+  detectAntigravityAuthRequired,
   extractAntigravityExecutionMetrics,
+  extractAntigravityRetryNotBefore,
   extractAntigravitySessionId,
+  hasAntigravityTerminalResult,
+  isAntigravityModelNotFoundError,
+  isAntigravityProviderQuotaExhausted,
+  isAntigravityRefusalError,
+  isAntigravityTransientUpstreamError,
+  isAntigravityTurnLimitResult,
   isAntigravityUnknownSessionError,
 } from "./parse.js";
 import { firstNonEmptyLine } from "../utils.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
+
+/**
+ * Computes a deterministic SHA-256 fingerprint for the static prompt bundle
+ * (`instructionsContents` / `instructionsPrefix`, `bootstrapPromptTemplate`, and `skillEntryKeys` / `runtimeSkillsNote`)
+ * so resumed sessions can skip re-injecting identical instructions/skills on subsequent turns or reset when changed.
+ */
+export function computeAntigravityPromptBundleKey(input: {
+  instructionsContents?: string;
+  bootstrapPromptTemplate?: string;
+  skillEntryKeys?: string[];
+  instructionsPrefix?: string;
+  runtimeSkillsNote?: string;
+}): string | null {
+  const instructionsPart = (input.instructionsContents ?? input.instructionsPrefix ?? "").trim();
+  const bootstrapPart = (input.bootstrapPromptTemplate ?? "").trim();
+  const skillsPart = Array.isArray(input.skillEntryKeys)
+    ? [...input.skillEntryKeys].sort().join(",")
+    : (input.runtimeSkillsNote ?? "").trim();
+
+  if (!instructionsPart && !bootstrapPart && !skillsPart) {
+    return null;
+  }
+  const combined = JSON.stringify({
+    instructions: instructionsPart,
+    bootstrap: bootstrapPart,
+    skills: skillsPart,
+  });
+  return createHash("sha256").update(combined, "utf8").digest("hex");
+}
+
+/**
+ * Dynamically resolves the `AdapterBillingType` based on configured authentication environment variables.
+ */
+export function resolveAntigravityBillingType(env: Record<string, string>): AdapterBillingType {
+  const explicitBilling = (env.ANTIGRAVITY_BILLING_TYPE || "").trim().toLowerCase();
+  if (explicitBilling === "subscription") return "subscription";
+  if (explicitBilling === "metered_api") return "metered_api";
+  if (explicitBilling === "api") return "api";
+
+  const adcFlag = (env.AGY_ADC_AUTH || "").trim().toLowerCase();
+  if (
+    adcFlag === "1" ||
+    adcFlag === "true" ||
+    adcFlag === "yes" ||
+    Boolean((env.GOOGLE_APPLICATION_CREDENTIALS || "").trim())
+  ) {
+    return "metered_api";
+  }
+
+  if (
+    Boolean((env.ANTIGRAVITY_API_KEY || "").trim()) ||
+    Boolean((env.GEMINI_API_KEY || "").trim()) ||
+    Boolean((env.GOOGLE_API_KEY || "").trim())
+  ) {
+    return "api";
+  }
+
+  return "subscription";
+}
+
+/**
+ * Checks whether a persisted session CWD matches the effective execution CWD.
+ * If `savedCwd` was not recorded in legacy sessionParams, returns true for backward compatibility.
+ */
+export function agySessionCwdMatchesExecutionTarget(
+  savedCwd: string | null | undefined,
+  effectiveExecutionCwd: string,
+  executionTargetIsRemote: boolean,
+): boolean {
+  const trimmedSaved = (savedCwd || "").trim();
+  if (!trimmedSaved) return true;
+  if (executionTargetIsRemote) {
+    return trimmedSaved.replace(/\/+$/, "") === effectiveExecutionCwd.trim().replace(/\/+$/, "");
+  }
+  return path.resolve(trimmedSaved) === path.resolve(effectiveExecutionCwd);
+}
+
+/**
+ * Applies headless-safe terminal, pager, and VCS editor environment defaults (`agy` v1.3.3–v1.3.6).
+ */
+function applyAntigravityHeadlessEnv(env: Record<string, string>): void {
+  const defaults: Record<string, string> = {
+    NO_BROWSER: "1",
+    GIT_TERMINAL_PROMPT: "0",
+    GIT_EDITOR: "false",
+    HGEDITOR: "false",
+    JJ_EDITOR: "false",
+    PAGER: "cat",
+    GIT_PAGER: "cat",
+    JJ_PAGER: "cat",
+  };
+  for (const [key, value] of Object.entries(defaults)) {
+    if (!env[key]) {
+      env[key] = value;
+    }
+  }
+}
 
 /**
  * Resolves the effective working directory (CWD) paths based on agent instructions, 
@@ -145,15 +252,42 @@ function buildExecutionEnvironment(
   const env: Record<string, string> = { ...buildPaperclipEnv(agent) };
   env.PAPERCLIP_RUN_ID = runId;
 
+  for (const [key, value] of Object.entries(envConfig)) {
+    if (typeof value === "string") {
+      env[key] = value;
+    }
+  }
+
   if (model && model !== DEFAULT_ANTIGRAVITY_LOCAL_MODEL) {
     env.ANTIGRAVITY_MODEL = model;
   }
 
-  if (authToken && typeof envConfig.PAPERCLIP_API_KEY !== "string") {
+  if (authToken) {
     env.PAPERCLIP_API_KEY = authToken;
   }
 
   return { env, envConfig };
+}
+
+/**
+ * Re-enforces protected Paperclip identity and JWT variables after `config.env` merge
+ * so untrusted `config.env` entries cannot spoof `PAPERCLIP_API_KEY` (when `authToken` is minted),
+ * `PAPERCLIP_RUN_ID`, `PAPERCLIP_AGENT_ID`, or `PAPERCLIP_COMPANY_ID`.
+ */
+function enforceProtectedPaperclipRuntimeEnv(
+  env: Record<string, string>,
+  runId: string,
+  agent: AdapterAgent,
+  authToken: string | null | undefined,
+): void {
+  const basePaperclipEnv = buildPaperclipEnv(agent);
+  for (const [k, v] of Object.entries(basePaperclipEnv)) {
+    env[k] = v;
+  }
+  env.PAPERCLIP_RUN_ID = runId;
+  if (authToken) {
+    env.PAPERCLIP_API_KEY = authToken;
+  }
 }
 
 /**
@@ -524,13 +658,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     executionCwd: effectiveExecutionCwd,
   });
 
+  enforceProtectedPaperclipRuntimeEnv(env, runId, agent, authToken);
+  applyAntigravityHeadlessEnv(env);
+
   const effectiveEnv = Object.fromEntries(
     Object.entries({ ...process.env, ...env }).filter(
       (entry): entry is [string, string] => typeof entry[1] === "string",
     ),
   );
   const runtimeEnv = Object.fromEntries(
-    Object.entries(ensurePathInEnv(effectiveEnv)).filter(
+    Object.entries(ensureAntigravityPathInEnv(effectiveEnv)).filter(
       (entry): entry is [string, string] => typeof entry[1] === "string",
     ),
   );
@@ -598,22 +735,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
   }
 
-  const runtimeSessionParams = parseObject(runtime.sessionParams);
-  const runtimeSessionId = asString(runtimeSessionParams.sessionId, runtime.sessionId ?? "");
-  const runtimeRemoteExecution = parseObject(runtimeSessionParams.remoteExecution);
-  const canResumeSession =
-    runtimeSessionId.length > 0 &&
-    adapterExecutionTargetSessionMatches(runtimeRemoteExecution, runtimeExecutionTarget);
-  const sessionId = canResumeSession ? runtimeSessionId : null;
-
   const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
   const instructionsDir = instructionsFilePath ? `${path.dirname(instructionsFilePath)}/` : "";
   let instructionsPrefix = "";
+  let loadedInstructionsContents = "";
   if (instructionsFilePath) {
     try {
-      const instructionsContents = await fs.readFile(instructionsFilePath, "utf8");
+      loadedInstructionsContents = await fs.readFile(instructionsFilePath, "utf8");
       instructionsPrefix =
-        `${instructionsContents}\n\n` +
+        `${loadedInstructionsContents}\n\n` +
         `The above agent instructions were loaded from ${instructionsFilePath}. ` +
         `Resolve any relative file references from ${instructionsDir}.\n\n`;
     } catch (err) {
@@ -649,6 +779,47 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         ].filter(Boolean).join("\n")
       : "";
 
+  const bootstrapPromptTemplate = asString(config.bootstrapPromptTemplate, "");
+
+  const promptBundleKey = computeAntigravityPromptBundleKey({
+    instructionsContents: loadedInstructionsContents,
+    bootstrapPromptTemplate,
+    skillEntryKeys: selectedSkillEntries.map((entry) => entry.key),
+  });
+
+  const runtimeSessionParams = parseObject(runtime.sessionParams);
+  const runtimeSessionId = asString(runtimeSessionParams.sessionId, runtime.sessionId ?? "");
+  const runtimeSessionCwd = asString(runtimeSessionParams.cwd, "");
+  const runtimePromptBundleKey = asString(runtimeSessionParams.promptBundleKey, "");
+  const runtimeRemoteExecution = parseObject(runtimeSessionParams.remoteExecution);
+  const targetMatches = adapterExecutionTargetSessionMatches(runtimeRemoteExecution, runtimeExecutionTarget);
+  const cwdMatches = agySessionCwdMatchesExecutionTarget(
+    runtimeSessionCwd,
+    effectiveExecutionCwd,
+    executionTargetIsRemote,
+  );
+  const promptBundleMatches =
+    !runtimePromptBundleKey || !promptBundleKey || runtimePromptBundleKey === promptBundleKey;
+
+  if (runtimeSessionId.length > 0 && !cwdMatches) {
+    await onLog(
+      "stdout",
+      `[paperclip] Antigravity session "${runtimeSessionId}" was saved for a different workspace ("${runtimeSessionCwd}" vs "${effectiveExecutionCwd}"); starting a fresh session.\n`,
+    );
+  } else if (runtimeSessionId.length > 0 && !promptBundleMatches) {
+    await onLog(
+      "stdout",
+      `[paperclip] Antigravity prompt bundle changed since the last turn; starting a fresh session.\n`,
+    );
+  }
+
+  const canResumeSession =
+    runtimeSessionId.length > 0 && targetMatches && cwdMatches && promptBundleMatches;
+  const sessionId = canResumeSession ? runtimeSessionId : null;
+  const skippedCachedPromptBundleOnResume = Boolean(
+    sessionId && runtimePromptBundleKey && promptBundleKey && runtimePromptBundleKey === promptBundleKey,
+  );
+
   const commandNotes = (() => {
     const notes: string[] = [
       "Running Antigravity CLI in headless print mode",
@@ -660,10 +831,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       );
     }
     if (instructionsPrefix.length > 0) {
-      notes.push(
-        `Loaded agent instructions from ${instructionsFilePath}`,
-        `Prepended instructions + path directive to prompt (relative references from ${instructionsDir}).`,
-      );
+      if (skippedCachedPromptBundleOnResume) {
+        notes.push(
+          "Skipped re-injecting agent instructions on resumed session (promptBundleKey unchanged).",
+        );
+      } else {
+        notes.push(
+          `Loaded agent instructions from ${instructionsFilePath}`,
+          `Prepended instructions + path directive to prompt (relative references from ${instructionsDir}).`,
+        );
+      }
     } else if (instructionsFilePath) {
       notes.push(
         `Configured instructionsFilePath ${instructionsFilePath}, but file could not be read; continuing without injected instructions.`,
@@ -672,7 +849,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     return notes;
   })();
 
-  const bootstrapPromptTemplate = asString(config.bootstrapPromptTemplate, "");
   const templateData = {
     agentId: agent.id,
     companyId: agent.companyId,
@@ -682,40 +858,52 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     run: { id: runId, source: "on_demand" },
     context,
   };
-  const renderedBootstrapPrompt =
-    !sessionId && bootstrapPromptTemplate.trim().length > 0
-      ? renderTemplate(bootstrapPromptTemplate, templateData).trim()
-      : "";
-  const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, { resumedSession: Boolean(sessionId) });
-  const shouldUseResumeDeltaPrompt = Boolean(sessionId) && wakePrompt.length > 0;
-  const renderedPrompt = shouldUseResumeDeltaPrompt || isRecoveryWakePayload(context.paperclipWake)
-    ? ""
-    : renderTemplate(promptTemplate, templateData);
   const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
   const paperclipEnvNote = renderPaperclipEnvNote(env);
   const apiAccessNote = renderApiAccessNote(env);
-  const prompt = joinPromptSections([
-    runtimeSkillsNote,
-    instructionsPrefix,
-    renderedBootstrapPrompt,
-    wakePrompt,
-    sessionHandoffNote,
-    paperclipEnvNote,
-    apiAccessNote,
-    renderedPrompt,
-  ]);
-  const promptMetrics = {
-    promptChars: prompt.length,
-    instructionsChars: instructionsPrefix.length,
-    skillsChars: runtimeSkillsNote.length,
-    bootstrapPromptChars: renderedBootstrapPrompt.length,
-    wakePromptChars: wakePrompt.length,
-    sessionHandoffChars: sessionHandoffNote.length,
-    runtimeNoteChars: paperclipEnvNote.length + apiAccessNote.length,
-    heartbeatPromptChars: renderedPrompt.length,
+
+  const buildAttemptPrompt = (resumeSessionId: string | null) => {
+    const isResumed = Boolean(resumeSessionId);
+    const shouldSkipCachedPromptBundle = Boolean(
+      isResumed && runtimePromptBundleKey && promptBundleKey && runtimePromptBundleKey === promptBundleKey,
+    );
+    const effectiveSkillsNote = shouldSkipCachedPromptBundle ? "" : runtimeSkillsNote;
+    const effectiveInstructionsPrefix = shouldSkipCachedPromptBundle ? "" : instructionsPrefix;
+    const renderedBootstrapPrompt =
+      !isResumed && bootstrapPromptTemplate.trim().length > 0
+        ? renderTemplate(bootstrapPromptTemplate, templateData).trim()
+        : "";
+    const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, { resumedSession: isResumed });
+    const shouldUseResumeDeltaPrompt = isResumed && wakePrompt.length > 0;
+    const renderedPrompt =
+      shouldUseResumeDeltaPrompt || isRecoveryWakePayload(context.paperclipWake)
+        ? ""
+        : renderTemplate(promptTemplate, templateData);
+    const prompt = joinPromptSections([
+      effectiveSkillsNote,
+      effectiveInstructionsPrefix,
+      renderedBootstrapPrompt,
+      wakePrompt,
+      sessionHandoffNote,
+      paperclipEnvNote,
+      apiAccessNote,
+      renderedPrompt,
+    ]);
+    const promptMetrics = {
+      promptChars: prompt.length,
+      instructionsChars: effectiveInstructionsPrefix.length,
+      skillsChars: effectiveSkillsNote.length,
+      bootstrapPromptChars: renderedBootstrapPrompt.length,
+      wakePromptChars: wakePrompt.length,
+      sessionHandoffChars: sessionHandoffNote.length,
+      runtimeNoteChars: paperclipEnvNote.length + apiAccessNote.length,
+      heartbeatPromptChars: renderedPrompt.length,
+    };
+    return { prompt, promptMetrics };
   };
 
   const runAttempt = async (resumeSessionId: string | null) => {
+    const { prompt, promptMetrics } = buildAttemptPrompt(resumeSessionId);
     const rawWorkspaces = Array.isArray(context.paperclipWorkspaces) ? context.paperclipWorkspaces : [];
     const workspaces = [...rawWorkspaces];
     if (skillsHome && selectedSkillEntries.length > 0) {
@@ -767,33 +955,113 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       graceSec,
       onSpawn,
       onLog,
+      terminalResultCleanup: {
+        hasTerminalResult: hasAntigravityTerminalResult,
+      },
     });
   };
 
   try {
-    const proc = await runAttempt(sessionId);
-    
+    let clearSessionOnMissingSession = false;
+    let activeResumeSessionId: string | null = sessionId;
+    let proc = await runAttempt(sessionId);
+
+    if (
+      sessionId &&
+      !proc.timedOut &&
+      (proc.exitCode ?? 0) !== 0 &&
+      isAntigravityUnknownSessionError(proc.stdout, proc.stderr)
+    ) {
+      await onLog(
+        "stdout",
+        `[paperclip] Antigravity session "${sessionId}" is unavailable or corrupted; retrying with a fresh session.\n`,
+      );
+      clearSessionOnMissingSession = true;
+      activeResumeSessionId = null;
+      proc = await runAttempt(null);
+    }
+
+    const billingType = resolveAntigravityBillingType(env);
+    const transportErrorCode =
+      typeof (proc as unknown as Record<string, unknown>).errorCode === "string" &&
+      ((proc as unknown as Record<string, unknown>).errorCode as string).trim().length > 0
+        ? ((proc as unknown as Record<string, unknown>).errorCode as string).trim()
+        : null;
+
     if (proc.timedOut) {
       return {
         exitCode: proc.exitCode,
         signal: proc.signal,
         timedOut: true,
         errorMessage: `Timed out after ${processTimeoutSec}s`,
-        errorCode: null,
-        clearSession: false,
+        errorCode: transportErrorCode ?? "timeout",
+        billingType,
+        ...(clearSessionOnMissingSession ? { clearSession: true } : {}),
       };
     }
 
-    const failed = (proc.exitCode ?? 0) !== 0;
     const rawStdout = proc.stdout.trim();
     const rawStderr = proc.stderr.trim();
+    const metrics = extractAntigravityExecutionMetrics(rawStdout, rawStderr);
+    const refusal = isAntigravityRefusalError({ stdout: rawStdout, stderr: rawStderr });
+    const turnLimitHit = isAntigravityTurnLimitResult(proc.exitCode, rawStderr, rawStdout);
+    const failed = (proc.exitCode ?? 0) !== 0 || metrics.isError || refusal || turnLimitHit;
     const unknownSession = failed && isAntigravityUnknownSessionError(rawStdout, rawStderr);
-    const fallbackErrorMessage = firstNonEmptyLine(rawStderr) || `Antigravity exited with code ${proc.exitCode ?? -1}`;
+    const fallbackErrorMessage =
+      firstNonEmptyLine(rawStderr) ||
+      (refusal ? "Antigravity model refused the request" : "") ||
+      (turnLimitHit ? "Antigravity run exhausted maximum turns" : "") ||
+      `Antigravity exited with code ${proc.exitCode ?? -1}`;
+
+    let errorCode: string | null = transportErrorCode;
+    let errorFamily: AdapterExecutionResult["errorFamily"] = null;
+    let retryNotBefore: string | null = null;
+    let errorMeta: Record<string, unknown> | undefined;
+    let clearSessionForMaxTurns = false;
+    let clearSessionForQuota = false;
+
+    if (failed) {
+      const authCheck = detectAntigravityAuthRequired({ stdout: rawStdout, stderr: rawStderr });
+      if (!errorCode && authCheck.requiresAuth) {
+        errorCode = "antigravity_auth_required";
+        if (authCheck.loginUrl) {
+          errorMeta = { loginUrl: authCheck.loginUrl };
+        }
+      }
+      if (!errorCode && isAntigravityModelNotFoundError({ stdout: rawStdout, stderr: rawStderr })) {
+        errorCode = "model_not_found";
+      }
+      if (!errorCode && turnLimitHit) {
+        errorCode = "max_turns_exhausted";
+        clearSessionForMaxTurns = true;
+      } else if (turnLimitHit) {
+        clearSessionForMaxTurns = true;
+      }
+      if (!errorCode && refusal) {
+        errorCode = "antigravity_refusal";
+      }
+      if (!errorCode && isAntigravityProviderQuotaExhausted({ stdout: rawStdout, stderr: rawStderr })) {
+        errorCode = "provider_quota";
+        clearSessionForQuota = true;
+        retryNotBefore = extractAntigravityRetryNotBefore({ stdout: rawStdout, stderr: rawStderr });
+      }
+      if (!errorCode && isAntigravityTransientUpstreamError({ stdout: rawStdout, stderr: rawStderr })) {
+        errorCode = "antigravity_transient_upstream";
+        errorFamily = "transient_upstream";
+        retryNotBefore = extractAntigravityRetryNotBefore({ stdout: rawStdout, stderr: rawStderr });
+      }
+    }
 
     const extractedSessionId = extractAntigravitySessionId(rawStdout, rawStderr);
-    const finalSessionId = sessionId || extractedSessionId;
+    const finalSessionId =
+      extractedSessionId || (!unknownSession && !clearSessionForMaxTurns ? activeResumeSessionId : null);
+    const shouldClearSession = Boolean(
+      unknownSession ||
+        (clearSessionOnMissingSession && !finalSessionId) ||
+        clearSessionForMaxTurns ||
+        clearSessionForQuota,
+    );
 
-    const metrics = extractAntigravityExecutionMetrics(rawStdout, rawStderr);
     const summaryText = metrics.response ?? rawStdout;
 
     const resolvedSessionParams = finalSessionId
@@ -801,6 +1069,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           sessionId: finalSessionId,
           cwd: effectiveExecutionCwd,
           ...(asString(workspaceContext.workspaceId, "") ? { workspaceId: workspaceContext.workspaceId } : {}),
+          ...(promptBundleKey ? { promptBundleKey } : {}),
           ...(executionTargetIsRemote ? { remoteExecution: adapterExecutionTargetSessionIdentity(runtimeExecutionTarget) } : {}),
         }
       : null;
@@ -810,7 +1079,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       signal: proc.signal,
       timedOut: false,
       errorMessage: failed ? fallbackErrorMessage : null,
-      errorCode: null,
+      errorCode,
+      ...(errorFamily ? { errorFamily } : {}),
+      ...(retryNotBefore ? { retryNotBefore } : {}),
+      ...(errorMeta ? { errorMeta } : {}),
       usage: metrics.usage,
       sessionId: finalSessionId || null,
       sessionParams: resolvedSessionParams,
@@ -818,12 +1090,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       provider: "google",
       biller: "google",
       model,
-      billingType: "api",
+      billingType,
       costUsd: metrics.costUsd,
-      resultJson: { raw: rawStdout },
+      resultJson: metrics.resultJson ?? { raw: rawStdout },
       summary: failed ? "" : summaryText,
       question: null,
-      clearSession: unknownSession,
+      ...(shouldClearSession ? { clearSession: true } : {}),
     };
   } finally {
     await Promise.all([

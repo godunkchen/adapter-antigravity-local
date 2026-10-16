@@ -6,7 +6,13 @@
  * @license MIT
  */
 
-export { execute } from "./execute.js";
+export {
+  execute,
+  compileAgyArguments,
+  computeAntigravityPromptBundleKey,
+  resolveAntigravityBillingType,
+  agySessionCwdMatchesExecutionTarget,
+} from "./execute.js";
 export { listAntigravitySkills, syncAntigravitySkills } from "./skills.js";
 export { testEnvironment } from "./test.js";
 export { getConfigSchema } from "./config-schema.js";

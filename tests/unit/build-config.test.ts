@@ -150,15 +150,140 @@ describe("UI build-config mapper", () => {
   it("parses comma-separated extraArgs into an array list of string arguments", () => {
     const result = buildAntigravityLocalConfig({
       extraArgs: "--verbose, --debug, --model-fallback=none",
-    });
+    } as any);
 
     expect(result.extraArgs).toEqual(["--verbose", "--debug", "--model-fallback=none"]);
   });
 
   /**
+   * Scenario: claude-local UI parity fields (thinkingEffort, dangerouslySkipPermissions, maxTurnsPerRun, workspaceStrategy, workspaceRuntime, adapterSchemaValues).
+   */
+  it("maps thinkingEffort, dangerouslySkipPermissions, maxTurnsPerRun, workspaceStrategy, workspaceRuntime, and adapterSchemaValues", () => {
+    const result = buildAntigravityLocalConfig({
+      model: "gemini-4-argon",
+      thinkingEffort: "high",
+      dangerouslySkipPermissions: false,
+      maxTurnsPerRun: 25,
+      workspaceStrategyType: "git_worktree",
+      workspaceBaseRef: "origin/main",
+      workspaceBranchTemplate: "agent/{{issue.identifier}}",
+      worktreeParentDir: "/tmp/worktrees",
+      runtimeServicesJson: JSON.stringify({
+        services: [{ serviceName: "web", port: 3000 }],
+      }),
+      adapterSchemaValues: {
+        mode: "auto",
+        agent: "code-reviewer",
+        jsonSchema: '{"type":"object"}',
+      },
+    } as any);
+
+    expect(result.model).toBe("gemini-4-argon");
+    expect(result.effort).toBe("high");
+    expect(result.dangerouslySkipPermissions).toBe(false);
+    expect(result.maxTurnsPerRun).toBe(25);
+    expect(result.mode).toBe("auto");
+    expect(result.agent).toBe("code-reviewer");
+    expect(result.jsonSchema).toBe('{"type":"object"}');
+    expect(result.workspaceStrategy).toEqual({
+      type: "git_worktree",
+      baseRef: "origin/main",
+      branchTemplate: "agent/{{issue.identifier}}",
+      worktreeParentDir: "/tmp/worktrees",
+    });
+    expect(result.workspaceRuntime).toEqual({
+      services: [{ serviceName: "web", port: 3000 }],
+    });
+  });
+
+  /**
+   * Scenario: compileAgyArguments CLI flag generation for agy v1.3.4-v1.3.6.
+   */
+  it("compiles --mode, --agent, --json-schema, and configurable --dangerously-skip-permissions flags", async () => {
+    const { compileAgyArguments } = await import("../../src/server/execute.js");
+    const args = compileAgyArguments(
+      "Review repository",
+      "conv-123",
+      [{ cwd: "/workspace/sub" }],
+      true,
+      ["--disable-slash-commands"],
+      "gemini-4-argon",
+      "high",
+      120,
+      {
+        mode: "auto",
+        agent: "security-auditor",
+        jsonSchema: '{"type":"object"}',
+        dangerouslySkipPermissions: false,
+      },
+    );
+
+    expect(args).toEqual([
+      "--print",
+      "Review repository",
+      "--output-format",
+      "stream-json",
+      "--model",
+      "gemini-4-argon",
+      "--effort",
+      "high",
+      "--mode",
+      "auto",
+      "--agent",
+      "security-auditor",
+      "--json-schema",
+      '{"type":"object"}',
+      "--print-timeout",
+      "120s",
+      "--conversation",
+      "conv-123",
+      "--add-dir",
+      "/workspace/sub",
+      "--sandbox",
+      "--disable-slash-commands",
+    ]);
+  });
+
+  /**
+   * Scenario: CLI version and capability detection (agy v1.3.6).
+   */
+  it("detects agy v1.3.6 CLI capabilities and enriches PATH with ~/.local/bin", async () => {
+    const {
+      parseAgyCliVersion,
+      isAgyVersionAtLeast,
+      detectAgyCliCapabilities,
+      ensureAntigravityPathInEnv,
+    } = await import("../../src/server/cli-capabilities.js");
+
+    const parsed = parseAgyCliVersion("1.3.6\n");
+    expect(parsed).toEqual({ major: 1, minor: 3, patch: 6, raw: "1.3.6" });
+    expect(isAgyVersionAtLeast(parsed, 1, 3, 6)).toBe(true);
+    expect(isAgyVersionAtLeast(parsed, 1, 3, 7)).toBe(false);
+
+    const caps = detectAgyCliCapabilities(
+      `Usage of agy:\n  --agent Agent for the current CLI session\n  --effort Reasoning effort\n  --json-schema Optional JSON schema\n  --mode Set the agent execution mode for this session (accept-edits, auto, plan)\nAvailable subcommands:\n  plugin Manage plugins`,
+      "1.3.6",
+    );
+    expect(caps).toEqual({
+      version: { major: 1, minor: 3, patch: 6, raw: "1.3.6" },
+      supportsModeFlag: true,
+      supportsAutoMode: true,
+      supportsAgentFlag: true,
+      supportsEffortFlag: true,
+      supportsJsonSchemaFlag: true,
+      supportsBaseModelDefaultEffort: true,
+      supportsPluginSubcommand: true,
+      supportsAdcAuth: true,
+    });
+
+    const enrichedEnv = ensureAntigravityPathInEnv({ HOME: "/home/ubuntu", PATH: "/usr/bin:/bin" });
+    expect(enrichedEnv.PATH.split(":")).toContain("/home/ubuntu/.local/bin");
+  });
+
+  /**
    * Scenario: Server adapter capability contract exports.
    */
-  it("exports complete ServerAdapterModule capabilities including supportsLocalAgentJwt", async () => {
+  it("exports complete ServerAdapterModule capabilities including supportsLocalAgentJwt and getConfigSchema", async () => {
     const { createServerAdapter, type, label } = await import("../../src/index.js");
     const adapter = createServerAdapter();
 
@@ -169,6 +294,9 @@ describe("UI build-config mapper", () => {
     expect(adapter.supportsInstructionsBundle).toBe(true);
     expect(adapter.instructionsPathKey).toBe("instructionsFilePath");
     expect(adapter.requiresMaterializedRuntimeSkills).toBe(true);
+    expect(typeof adapter.getConfigSchema).toBe("function");
+    const schema = await adapter.getConfigSchema!();
+    expect(schema.fields.map((f) => f.key)).toEqual(["mode", "agent", "effort", "jsonSchema"]);
     expect(typeof adapter.listSkills).toBe("function");
     expect(typeof adapter.syncSkills).toBe("function");
     expect(typeof adapter.execute).toBe("function");

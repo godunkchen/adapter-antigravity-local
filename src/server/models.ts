@@ -9,7 +9,7 @@
 
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { ensurePathInEnv } from "@paperclipai/adapter-utils/server-utils";
+import { ensureAntigravityPathInEnv } from "./cli-capabilities.js";
 import type { AntigravityModelDefinition } from "../types.js";
 import { DEFAULT_ANTIGRAVITY_LOCAL_MODEL, models as STATIC_MODELS } from "../index.js";
 
@@ -94,7 +94,7 @@ export function parseAgyModelsOutput(stdout: string): AntigravityModelDefinition
  */
 async function fetchAgyCliModels(command = "agy"): Promise<AntigravityModelDefinition[]> {
   try {
-    const env = ensurePathInEnv(process.env as Record<string, string>);
+    const env = ensureAntigravityPathInEnv(process.env as Record<string, string>);
     const { stdout } = await execFileAsync(command, ["models"], {
       env,
       timeout: AGY_MODELS_TIMEOUT_MS,

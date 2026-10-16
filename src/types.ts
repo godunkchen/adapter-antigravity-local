@@ -66,8 +66,16 @@ export interface AntigravityRawConfigValues {
   promptTemplate?: string;
   /** The bootstrap prompt execution template used only for initial run / cold start without an existing session. */
   bootstrapPromptTemplate?: string;
-  /** The AI model identifier (e.g., "gemini-3.5-flash"). */
+  /** The AI model identifier (e.g., "gemini-4-argon-high" or "gemini-3.8-flash"). */
   model?: string;
+  /** Optional reasoning effort level ("low" | "medium" | "high" | "xhigh" | "max"). */
+  thinkingEffort?: string;
+  /** Optional execution mode ("auto" | "accept-edits" | "plan"). */
+  mode?: string;
+  /** Optional custom agent/subagent identifier passed to --agent. */
+  agent?: string;
+  /** Optional JSON schema string or file path passed to --json-schema. */
+  jsonSchema?: string;
   /** The terminal command that executes the Antigravity binary. Defaults to "agy". */
   command?: string;
   /** Additional command-line arguments entered via the UI, separated by commas. */
@@ -80,6 +88,22 @@ export interface AntigravityRawConfigValues {
   envBindings?: unknown;
   /** If true, dangerously bypasses the operating system security sandbox. */
   dangerouslyBypassSandbox?: boolean;
+  /** If true (default), passes --dangerously-skip-permissions in headless mode. */
+  dangerouslySkipPermissions?: boolean;
+  /** Optional maximum number of turns per run. */
+  maxTurnsPerRun?: number;
+  /** Optional workspace strategy type (e.g., "git_worktree"). */
+  workspaceStrategyType?: string;
+  /** Optional base git ref for worktree creation. */
+  workspaceBaseRef?: string;
+  /** Optional branch template for worktree creation. */
+  workspaceBranchTemplate?: string;
+  /** Optional parent directory for git worktrees. */
+  worktreeParentDir?: string;
+  /** Optional JSON string defining workspace runtime services. */
+  runtimeServicesJson?: string;
+  /** Optional schema-driven custom adapter values. */
+  adapterSchemaValues?: Record<string, unknown>;
   /** The global run timeout in seconds for agent execution. */
   timeoutSec?: unknown;
   /** The grace period in seconds before forcibly killing the process with SIGKILL. */
@@ -87,6 +111,11 @@ export interface AntigravityRawConfigValues {
   /** The timeout in seconds specifically for the initial connection probe (Self-test). */
   helloProbeTimeoutSec?: unknown;
 }
+
+/**
+ * Execution modes supported by Antigravity CLI (--mode).
+ */
+export type AntigravityExecutionMode = "auto" | "accept-edits" | "plan";
 
 /**
  * Strict and strongly-typed configuration structure used internally 
@@ -101,8 +130,16 @@ export interface AntigravityAdapterConfig {
   promptTemplate?: string;
   /** The bootstrap prompt template used only for initial run / cold start without an existing session. */
   bootstrapPromptTemplate?: string;
-  /** The unique model identifier (e.g., "claude-sonnet-4.6-thinking" or "auto"). */
+  /** The unique model identifier (e.g., "gemini-4-argon-high", "claude-sonnet-5-5-high", or "auto"). */
   model: string;
+  /** Optional reasoning effort level ("low" | "medium" | "high" | "xhigh" | "max"). */
+  effort?: string;
+  /** Optional execution mode passed to `--mode` ("auto" | "accept-edits" | "plan"). */
+  mode?: AntigravityExecutionMode | string;
+  /** Optional custom agent name passed to `--agent` (agy v1.3.4+). */
+  agent?: string;
+  /** Optional JSON schema string or file path passed to `--json-schema`. */
+  jsonSchema?: string;
   /** The executable binary command. Typically resolves to "agy". */
   command?: string;
   /** Structured list of additional CLI arguments passed to the Antigravity process. */
@@ -113,6 +150,19 @@ export interface AntigravityAdapterConfig {
   env?: EnvBindings;
   /** Indicates whether CLI terminal and file system security restrictions are enabled. */
   sandbox?: boolean;
+  /** Whether to pass `--dangerously-skip-permissions` (defaults to true in headless mode unless explicitly disabled). */
+  dangerouslySkipPermissions?: boolean;
+  /** Maximum number of agentic turns per heartbeat run. */
+  maxTurnsPerRun?: number;
+  /** Optional git worktree strategy configuration. */
+  workspaceStrategy?: {
+    type: "git_worktree";
+    baseRef?: string;
+    branchTemplate?: string;
+    worktreeParentDir?: string;
+  };
+  /** Optional runtime services configuration parsed from runtimeServicesJson. */
+  workspaceRuntime?: Record<string, unknown>;
   /** The inactivity timeout in seconds. Zero indicates unlimited execution time. */
   timeoutSec?: number;
   /** The process termination grace period in seconds after SIGTERM. Defaults to 15. */
@@ -139,6 +189,8 @@ export interface AntigravitySessionParams extends Record<string, unknown> {
   repoRef?: string;
   /** Optional structured metadata of the remote execution environment (SSH/Sandbox). */
   remoteExecution?: Record<string, unknown> | null;
+  /** Optional SHA-256 fingerprint of the static prompt bundle (instructions + runtime skills). */
+  promptBundleKey?: string;
 }
 
 /**

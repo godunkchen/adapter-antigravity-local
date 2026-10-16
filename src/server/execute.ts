@@ -173,16 +173,25 @@ export interface AgyModelResolution {
   effort?: string;
 }
 
+export interface CompileAgyArgumentsOptions {
+  mode?: string;
+  agent?: string;
+  jsonSchema?: string;
+  dangerouslySkipPermissions?: boolean;
+}
+
 /**
  * Resolves Paperclip model selections to exact agy CLI model flags and reasoning effort settings.
  *
- * Rules:
- * 1. Flat model IDs (e.g. gemini-3.7-flash-high, claude-sonnet-4-6, gpt-oss-120b-medium) are supported directly.
- *    If an external thinkingEffort is supplied that conflicts with a composite model's effort suffix,
- *    the suffix is adapted accordingly.
- * 2. Claude models map to exact agy CLI identifiers (e.g. claude-sonnet-4-6) and DO NOT accept --effort.
- * 3. Base model IDs (e.g. gemini-3.7-flash, gemini-3.5-flash) accept explicit or default --effort.
- * 4. "auto" returns empty object or { effort: userEffort } to allow agy native auto-routing defaults.
+ * Rules (agy v1.3.4–v1.3.6):
+ * 1. Flat composite model IDs (e.g. gemini-4-argon-high, gemini-3.8-flash-high, claude-sonnet-5-5-high, gpt-oss-120b-medium)
+ *    are supported directly. If an explicit thinkingEffort is supplied on a composite model, its effort suffix is adapted.
+ * 2. Base model IDs (e.g. gemini-4-argon, gemini-3.8-flash, claude-opus-5-5, claude-sonnet-5-5, gpt-oss-120b)
+ *    omit `--effort` when no explicit effort is provided so `agy` v1.3.4+ uses the server's default reasoning effort
+ *    (and `AGY_ADC_AUTH` base model IDs work natively in v1.3.6). When an explicit effort is provided on a base model,
+ *    `--effort <level>` is passed alongside `--model <base-id>`.
+ * 3. Legacy Claude models map to exact agy CLI identifiers (e.g. claude-sonnet-4-6, claude-opus-4-6-thinking).
+ * 4. "auto" returns empty object or `{ effort: userEffort }` to allow agy native auto-routing defaults.
  */
 export function resolveAgyModelAndEffort(rawModel?: string, rawEffort?: string): AgyModelResolution {
   const modelStr = (rawModel || "").trim();
@@ -207,30 +216,54 @@ export function resolveAgyModelAndEffort(rawModel?: string, rawEffort?: string):
 
   const lower = modelStr.toLowerCase();
 
-  // 1. Claude 5.5 models (agy 1.3.3)
+  // 1. Gemini 4 Argon models (agy 1.3.6)
+  if (lower.startsWith("gemini-4-argon") || lower.includes("argon")) {
+    const isBaseArgon = lower === "gemini-4-argon";
+    if (!userEffort) {
+      if (lower.includes("-low")) return { model: "gemini-4-argon-low" };
+      if (lower.includes("-medium")) return { model: "gemini-4-argon-medium" };
+      if (lower.includes("-high")) return { model: "gemini-4-argon-high" };
+      return { model: "gemini-4-argon" };
+    }
+    if (isBaseArgon) {
+      return { model: "gemini-4-argon", effort: userEffort };
+    }
+    const targetEffort = userEffort === "xhigh" || userEffort === "max" ? "high" : userEffort;
+    return { model: `gemini-4-argon-${targetEffort}` };
+  }
+
+  // 2. Claude 5.5 models (agy 1.3.3–1.3.6, including base model & ADC support)
   if (lower.startsWith("claude-sonnet-5-5") || lower.startsWith("claude-sonnet-5.5")) {
+    const isBaseSonnet55 = lower === "claude-sonnet-5-5" || lower === "claude-sonnet-5.5";
     if (!userEffort) {
       if (lower.includes("-low")) return { model: "claude-sonnet-5-5-low" };
       if (lower.includes("-medium")) return { model: "claude-sonnet-5-5-medium" };
       if (lower.includes("-high")) return { model: "claude-sonnet-5-5-high" };
-      return { model: "claude-sonnet-5-5-high" };
+      return { model: "claude-sonnet-5-5" };
+    }
+    if (isBaseSonnet55) {
+      return { model: "claude-sonnet-5-5", effort: userEffort };
     }
     const targetEffort = userEffort === "xhigh" || userEffort === "max" ? "high" : userEffort;
     return { model: `claude-sonnet-5-5-${targetEffort}` };
   }
 
   if (lower.startsWith("claude-opus-5-5") || lower.startsWith("claude-opus-5.5")) {
+    const isBaseOpus55 = lower === "claude-opus-5-5" || lower === "claude-opus-5.5";
     if (!userEffort) {
       if (lower.includes("-low")) return { model: "claude-opus-5-5-low" };
       if (lower.includes("-medium")) return { model: "claude-opus-5-5-medium" };
       if (lower.includes("-high")) return { model: "claude-opus-5-5-high" };
-      return { model: "claude-opus-5-5-high" };
+      return { model: "claude-opus-5-5" };
+    }
+    if (isBaseOpus55) {
+      return { model: "claude-opus-5-5", effort: userEffort };
     }
     const targetEffort = userEffort === "xhigh" || userEffort === "max" ? "high" : userEffort;
     return { model: `claude-opus-5-5-${targetEffort}` };
   }
 
-  // 2. Legacy Claude models & general aliases
+  // 3. Legacy Claude models & general aliases
   if (lower === "claude-sonnet-4-6" || lower === "claude-sonnet-4.6-thinking") {
     return { model: "claude-sonnet-4-6" };
   }
@@ -244,7 +277,7 @@ export function resolveAgyModelAndEffort(rawModel?: string, rawEffort?: string):
     return { model: "claude-opus-5-5-high" };
   }
 
-  // 3. GPT-OSS 120B
+  // 4. GPT-OSS 120B (agy 1.3.4+ base model default effort support)
   if (lower.includes("gpt-oss-120b")) {
     if (lower === "gpt-oss-120b-medium" && !userEffort) {
       return { model: "gpt-oss-120b-medium" };
@@ -252,16 +285,19 @@ export function resolveAgyModelAndEffort(rawModel?: string, rawEffort?: string):
     if (userEffort) {
       return { model: "gpt-oss-120b", effort: userEffort };
     }
+    if (lower === "gpt-oss-120b") {
+      return { model: "gpt-oss-120b" };
+    }
     return { model: "gpt-oss-120b-medium" };
   }
 
-  // 4. Gemini 3.8 Flash (agy 1.3.3)
+  // 5. Gemini 3.8 Flash (agy 1.3.3–1.3.6)
   if (lower.includes("gemini-3.8-flash") || lower.includes("gemini-3.8")) {
     if (!userEffort) {
       if (lower.includes("-high")) return { model: "gemini-3.8-flash-high" };
       if (lower.includes("-medium")) return { model: "gemini-3.8-flash-medium" };
       if (lower.includes("-low")) return { model: "gemini-3.8-flash-low" };
-      return { model: "gemini-3.8-flash", effort: "high" };
+      return { model: "gemini-3.8-flash" };
     }
     if (lower === "gemini-3.8-flash") {
       return { model: "gemini-3.8-flash", effort: userEffort };
@@ -270,13 +306,13 @@ export function resolveAgyModelAndEffort(rawModel?: string, rawEffort?: string):
     return { model: `gemini-3.8-flash-${targetEffort}` };
   }
 
-  // 5. Gemini 3.7 Flash
+  // 6. Gemini 3.7 Flash
   if (lower.includes("gemini-3.7-flash") || lower.includes("gemini-3.7")) {
     if (!userEffort) {
       if (lower.includes("-high")) return { model: "gemini-3.7-flash-high" };
       if (lower.includes("-medium")) return { model: "gemini-3.7-flash-medium" };
       if (lower.includes("-low")) return { model: "gemini-3.7-flash-low" };
-      return { model: "gemini-3.7-flash", effort: "high" };
+      return { model: "gemini-3.7-flash" };
     }
     if (lower === "gemini-3.7-flash") {
       return { model: "gemini-3.7-flash", effort: userEffort };
@@ -285,13 +321,13 @@ export function resolveAgyModelAndEffort(rawModel?: string, rawEffort?: string):
     return { model: `gemini-3.7-flash-${targetEffort}` };
   }
 
-  // 6. Gemini 3.6 Flash
+  // 7. Gemini 3.6 Flash
   if (lower.includes("gemini-3.6-flash") || lower.includes("gemini-3.6")) {
     if (!userEffort) {
       if (lower.includes("-high")) return { model: "gemini-3.6-flash-high" };
       if (lower.includes("-medium")) return { model: "gemini-3.6-flash-medium" };
       if (lower.includes("-low")) return { model: "gemini-3.6-flash-low" };
-      return { model: "gemini-3.6-flash", effort: "high" };
+      return { model: "gemini-3.6-flash" };
     }
     if (lower === "gemini-3.6-flash") {
       return { model: "gemini-3.6-flash", effort: userEffort };
@@ -300,7 +336,7 @@ export function resolveAgyModelAndEffort(rawModel?: string, rawEffort?: string):
     return { model: `gemini-3.6-flash-${targetEffort}` };
   }
 
-  // 7. Gemini 3.5 Flash / Cheap / Fast
+  // 8. Gemini 3.5 Flash / Cheap / Fast
   if (lower === "cheap" || lower === "fast" || lower.includes("gemini-3.5-flash") || lower.includes("gemini-3.5")) {
     if (lower === "cheap" || lower === "fast") {
       const targetEffort = userEffort === "xhigh" || userEffort === "max" ? "high" : userEffort || "low";
@@ -310,7 +346,7 @@ export function resolveAgyModelAndEffort(rawModel?: string, rawEffort?: string):
       if (lower.includes("-high")) return { model: "gemini-3.5-flash-high" };
       if (lower.includes("-medium")) return { model: "gemini-3.5-flash-medium" };
       if (lower.includes("-low")) return { model: "gemini-3.5-flash-low" };
-      return { model: "gemini-3.5-flash", effort: "medium" };
+      return { model: "gemini-3.5-flash" };
     }
     if (lower === "gemini-3.5-flash") {
       return { model: "gemini-3.5-flash", effort: userEffort };
@@ -319,12 +355,12 @@ export function resolveAgyModelAndEffort(rawModel?: string, rawEffort?: string):
     return { model: `gemini-3.5-flash-${targetEffort}` };
   }
 
-  // 8. Gemini 3.1 Pro
+  // 9. Gemini 3.1 Pro
   if (lower.includes("gemini-3.1-pro") || lower.includes("gemini-3.1")) {
     if (!userEffort) {
       if (lower.includes("-low")) return { model: "gemini-3.1-pro-low" };
       if (lower.includes("-high")) return { model: "gemini-3.1-pro-high" };
-      return { model: "gemini-3.1-pro", effort: "high" };
+      return { model: "gemini-3.1-pro" };
     }
     if (lower === "gemini-3.1-pro") {
       return { model: "gemini-3.1-pro", effort: userEffort };
@@ -336,7 +372,7 @@ export function resolveAgyModelAndEffort(rawModel?: string, rawEffort?: string):
   return { model: modelStr, ...(userEffort ? { effort: userEffort } : {}) };
 }
 
-function compileAgyArguments(
+export function compileAgyArguments(
   prompt: string,
   resumeSessionId: string | null,
   workspaces: unknown[],
@@ -345,6 +381,7 @@ function compileAgyArguments(
   model?: string,
   effort?: string,
   timeoutSec?: number,
+  options?: CompileAgyArgumentsOptions,
 ): string[] {
   const args = ["--print", prompt, "--output-format", "stream-json"];
   const resolved = resolveAgyModelAndEffort(model, effort);
@@ -353,6 +390,18 @@ function compileAgyArguments(
   }
   if (resolved.effort) {
     args.push("--effort", resolved.effort);
+  }
+  const mode = (options?.mode || "").trim();
+  if (mode) {
+    args.push("--mode", mode);
+  }
+  const agentName = (options?.agent || "").trim();
+  if (agentName) {
+    args.push("--agent", agentName);
+  }
+  const jsonSchema = (options?.jsonSchema || "").trim();
+  if (jsonSchema) {
+    args.push("--json-schema", jsonSchema);
   }
   if (timeoutSec && timeoutSec > 0) {
     args.push("--print-timeout", `${timeoutSec}s`);
@@ -369,7 +418,9 @@ function compileAgyArguments(
     }
   }
 
-  args.push("--dangerously-skip-permissions");
+  if (options?.dangerouslySkipPermissions !== false) {
+    args.push("--dangerously-skip-permissions");
+  }
   if (sandbox) {
     args.push("--sandbox");
   }
@@ -410,6 +461,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     asString(config.modelReasoningEffort, "") ||
     asString(config.reasoningEffort, "")
   ).trim();
+  const mode = asString(config.mode, "").trim();
+  const customAgent = asString(config.agent, "").trim();
+  const jsonSchema = asString(config.jsonSchema, "").trim();
+  const dangerouslySkipPermissions = asBoolean(config.dangerouslySkipPermissions, true);
   const configuredTimeoutSec = asNumber(config.timeoutSec, 0) || asNumber(config.timeout, 0);
   const sandbox = asBoolean(config.sandbox, false);
 
@@ -671,7 +726,22 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         workspaces.push({ cwd: skillsHome });
       }
     }
-    const args = compileAgyArguments(prompt, resumeSessionId, workspaces, sandbox, extraArgs, model, rawEffort, configuredTimeoutSec);
+    const args = compileAgyArguments(
+      prompt,
+      resumeSessionId,
+      workspaces,
+      sandbox,
+      extraArgs,
+      model,
+      rawEffort,
+      configuredTimeoutSec,
+      {
+        mode,
+        agent: customAgent,
+        jsonSchema,
+        dangerouslySkipPermissions,
+      },
+    );
     
     console.log(`[antigravity] Executing agy CLI: ${command} ${args.join(" ")}`);
     await onLog("stdout", `[antigravity] Executing agy CLI (model: "${model}", session: ${resumeSessionId ?? "new"})\n`);

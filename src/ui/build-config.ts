@@ -94,8 +94,25 @@ function parseEnvBindings(bindings: unknown): Record<string, unknown> {
 }
 
 /**
+ * Safely parses a JSON object string into a plain dictionary, returning null on invalid input.
+ */
+function parseJsonObject(text: string): Record<string, unknown> | null {
+  const trimmed = (text || "").trim();
+  if (!trimmed) return null;
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return null;
+    return parsed as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Builds the strongly-typed Antigravity local config structure from Web UI values.
- * Applies model fallbacks, sandboxing bypass, extra args parsing, and merges legacy env vars.
+ * Applies model fallbacks, sandboxing bypass, extra args parsing, merges legacy env vars,
+ * and maps `claude-local` parity fields (`thinkingEffort`, `dangerouslySkipPermissions`,
+ * `maxTurnsPerRun`, `workspaceStrategy`, `workspaceRuntime`, `mode`, `agent`, `jsonSchema`).
  *
  * @param v - Raw configuration values captured by Paperclip's Web UI.
  * @returns A validated, fully-typed Antigravity configuration structure.
@@ -113,13 +130,55 @@ export function buildAntigravityLocalConfig(v: CreateConfigValues): AntigravityA
     ac.instructionsFilePath = v.instructionsFilePath;
   }
   const rawRecord = v as unknown as Record<string, unknown>;
+  const schemaValues =
+    typeof v.adapterSchemaValues === "object" &&
+    v.adapterSchemaValues !== null &&
+    !Array.isArray(v.adapterSchemaValues)
+      ? v.adapterSchemaValues
+      : {};
+
   if (typeof rawRecord.bootstrapPromptTemplate === "string" && rawRecord.bootstrapPromptTemplate.trim().length > 0) {
     ac.bootstrapPromptTemplate = rawRecord.bootstrapPromptTemplate.trim();
+  } else if (typeof v.bootstrapPrompt === "string" && v.bootstrapPrompt.trim().length > 0) {
+    ac.bootstrapPromptTemplate = v.bootstrapPrompt.trim();
   }
   if (typeof rawRecord.promptTemplate === "string" && rawRecord.promptTemplate.trim().length > 0) {
     ac.promptTemplate = rawRecord.promptTemplate.trim();
   }
-  
+
+  const resolvedEffort =
+    (typeof v.thinkingEffort === "string" && v.thinkingEffort.trim()) ||
+    (typeof schemaValues.effort === "string" && schemaValues.effort.trim()) ||
+    (typeof rawRecord.effort === "string" && rawRecord.effort.trim()) ||
+    "";
+  if (resolvedEffort) {
+    ac.effort = resolvedEffort;
+  }
+
+  const resolvedMode =
+    (typeof schemaValues.mode === "string" && schemaValues.mode.trim()) ||
+    (typeof rawRecord.mode === "string" && rawRecord.mode.trim()) ||
+    "";
+  if (resolvedMode) {
+    ac.mode = resolvedMode;
+  }
+
+  const resolvedAgent =
+    (typeof schemaValues.agent === "string" && schemaValues.agent.trim()) ||
+    (typeof rawRecord.agent === "string" && rawRecord.agent.trim()) ||
+    "";
+  if (resolvedAgent) {
+    ac.agent = resolvedAgent;
+  }
+
+  const resolvedJsonSchema =
+    (typeof schemaValues.jsonSchema === "string" && schemaValues.jsonSchema.trim()) ||
+    (typeof rawRecord.jsonSchema === "string" && rawRecord.jsonSchema.trim()) ||
+    "";
+  if (resolvedJsonSchema) {
+    ac.jsonSchema = resolvedJsonSchema;
+  }
+
   const env = parseEnvBindings(v.envBindings) as EnvBindings;
   const legacy = parseEnvVars(v.envVars);
   for (const [key, value] of Object.entries(legacy)) {
@@ -131,6 +190,25 @@ export function buildAntigravityLocalConfig(v: CreateConfigValues): AntigravityA
     ac.env = env;
   }
   ac.sandbox = !v.dangerouslyBypassSandbox;
+
+  if (typeof v.dangerouslySkipPermissions === "boolean") {
+    ac.dangerouslySkipPermissions = v.dangerouslySkipPermissions;
+  }
+  if (typeof v.maxTurnsPerRun === "number") {
+    ac.maxTurnsPerRun = v.maxTurnsPerRun;
+  }
+  if (v.workspaceStrategyType === "git_worktree") {
+    ac.workspaceStrategy = {
+      type: "git_worktree",
+      ...(v.workspaceBaseRef ? { baseRef: v.workspaceBaseRef } : {}),
+      ...(v.workspaceBranchTemplate ? { branchTemplate: v.workspaceBranchTemplate } : {}),
+      ...(v.worktreeParentDir ? { worktreeParentDir: v.worktreeParentDir } : {}),
+    };
+  }
+  const runtimeServices = parseJsonObject(v.runtimeServicesJson ?? "");
+  if (runtimeServices && Array.isArray(runtimeServices.services)) {
+    ac.workspaceRuntime = runtimeServices;
+  }
 
   if (v.command) {
     ac.command = v.command;

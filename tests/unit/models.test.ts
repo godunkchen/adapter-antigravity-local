@@ -114,6 +114,32 @@ describe("resolveAgyModelAndEffort Resolution Rules", () => {
     expect(resolveAgyModelAndEffort(undefined, "low")).toEqual({ effort: "low" });
   });
 
+  it("resolves Gemini 4 Argon models (agy v1.3.6) directly or adapts to effort overrides", () => {
+    expect(resolveAgyModelAndEffort("gemini-4-argon-high")).toEqual({
+      model: "gemini-4-argon-high",
+    });
+    expect(resolveAgyModelAndEffort("gemini-4-argon-medium")).toEqual({
+      model: "gemini-4-argon-medium",
+    });
+    expect(resolveAgyModelAndEffort("gemini-4-argon-low")).toEqual({
+      model: "gemini-4-argon-low",
+    });
+    expect(resolveAgyModelAndEffort("gemini-4-argon-high", "low")).toEqual({
+      model: "gemini-4-argon-low",
+    });
+    expect(resolveAgyModelAndEffort("gemini-4-argon-low", "xhigh")).toEqual({
+      model: "gemini-4-argon-high",
+    });
+    // Base model ID omits --effort when not specified (v1.3.4+ / ADC v1.3.6)
+    expect(resolveAgyModelAndEffort("gemini-4-argon")).toEqual({
+      model: "gemini-4-argon",
+    });
+    expect(resolveAgyModelAndEffort("gemini-4-argon", "medium")).toEqual({
+      model: "gemini-4-argon",
+      effort: "medium",
+    });
+  });
+
   it("resolves Gemini 3.8 models directly or adapts to effort overrides", () => {
     expect(resolveAgyModelAndEffort("gemini-3.8-flash-high")).toEqual({
       model: "gemini-3.8-flash-high",
@@ -131,7 +157,10 @@ describe("resolveAgyModelAndEffort Resolution Rules", () => {
     expect(resolveAgyModelAndEffort("gemini-3.8-flash-low", "xhigh")).toEqual({
       model: "gemini-3.8-flash-high",
     });
-    // Base model ID
+    // Base model ID omits --effort by default (agy v1.3.4+), or passes explicit effort
+    expect(resolveAgyModelAndEffort("gemini-3.8-flash")).toEqual({
+      model: "gemini-3.8-flash",
+    });
     expect(resolveAgyModelAndEffort("gemini-3.8-flash", "medium")).toEqual({
       model: "gemini-3.8-flash",
       effort: "medium",
@@ -153,6 +182,9 @@ describe("resolveAgyModelAndEffort Resolution Rules", () => {
       model: "gemini-3.7-flash-low",
     });
     // Base model ID
+    expect(resolveAgyModelAndEffort("gemini-3.7-flash")).toEqual({
+      model: "gemini-3.7-flash",
+    });
     expect(resolveAgyModelAndEffort("gemini-3.7-flash", "medium")).toEqual({
       model: "gemini-3.7-flash",
       effort: "medium",
@@ -162,6 +194,9 @@ describe("resolveAgyModelAndEffort Resolution Rules", () => {
   it("resolves Gemini 3.6 and 3.5 models and cheap alias", () => {
     expect(resolveAgyModelAndEffort("gemini-3.6-flash-high")).toEqual({
       model: "gemini-3.6-flash-high",
+    });
+    expect(resolveAgyModelAndEffort("gemini-3.6-flash")).toEqual({
+      model: "gemini-3.6-flash",
     });
     expect(resolveAgyModelAndEffort("gemini-3.6-flash", "low")).toEqual({
       model: "gemini-3.6-flash",
@@ -182,7 +217,7 @@ describe("resolveAgyModelAndEffort Resolution Rules", () => {
     });
   });
 
-  it("resolves Claude 5.5 composite models directly or adapts to effort", () => {
+  it("resolves Claude 5.5 composite and base/ADC models directly or adapts to effort", () => {
     expect(resolveAgyModelAndEffort("claude-sonnet-5-5-high")).toEqual({
       model: "claude-sonnet-5-5-high",
     });
@@ -195,11 +230,25 @@ describe("resolveAgyModelAndEffort Resolution Rules", () => {
     expect(resolveAgyModelAndEffort("claude-sonnet-5-5-high", "low")).toEqual({
       model: "claude-sonnet-5-5-low",
     });
+    expect(resolveAgyModelAndEffort("claude-sonnet-5-5")).toEqual({
+      model: "claude-sonnet-5-5",
+    });
+    expect(resolveAgyModelAndEffort("claude-sonnet-5-5", "medium")).toEqual({
+      model: "claude-sonnet-5-5",
+      effort: "medium",
+    });
     expect(resolveAgyModelAndEffort("claude-opus-5-5-high")).toEqual({
       model: "claude-opus-5-5-high",
     });
     expect(resolveAgyModelAndEffort("claude-opus-5-5-low", "medium")).toEqual({
       model: "claude-opus-5-5-medium",
+    });
+    expect(resolveAgyModelAndEffort("claude-opus-5-5")).toEqual({
+      model: "claude-opus-5-5",
+    });
+    expect(resolveAgyModelAndEffort("claude-opus-5-5", "high")).toEqual({
+      model: "claude-opus-5-5",
+      effort: "high",
     });
   });
 
@@ -225,6 +274,9 @@ describe("resolveAgyModelAndEffort Resolution Rules", () => {
     expect(resolveAgyModelAndEffort("gemini-3.1-pro-low")).toEqual({
       model: "gemini-3.1-pro-low",
     });
+    expect(resolveAgyModelAndEffort("gemini-3.1-pro")).toEqual({
+      model: "gemini-3.1-pro",
+    });
     expect(resolveAgyModelAndEffort("gemini-3.1-pro", "low")).toEqual({
       model: "gemini-3.1-pro",
       effort: "low",
@@ -237,6 +289,9 @@ describe("resolveAgyModelAndEffort Resolution Rules", () => {
   it("resolves GPT-OSS 120B models", () => {
     expect(resolveAgyModelAndEffort("gpt-oss-120b-medium")).toEqual({
       model: "gpt-oss-120b-medium",
+    });
+    expect(resolveAgyModelAndEffort("gpt-oss-120b")).toEqual({
+      model: "gpt-oss-120b",
     });
     expect(resolveAgyModelAndEffort("gpt-oss-120b", "low")).toEqual({
       model: "gpt-oss-120b",

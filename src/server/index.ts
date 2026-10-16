@@ -9,6 +9,15 @@
 export { execute } from "./execute.js";
 export { listAntigravitySkills, syncAntigravitySkills } from "./skills.js";
 export { testEnvironment } from "./test.js";
+export { getConfigSchema } from "./config-schema.js";
+export {
+  ensureAntigravityPathInEnv,
+  parseAgyCliVersion,
+  isAgyVersionAtLeast,
+  detectAgyCliCapabilities,
+  probeAgyCliCapabilities,
+  resetAgyCliCapabilitiesCacheForTests,
+} from "./cli-capabilities.js";
 export {
   listModels,
   refreshModels,

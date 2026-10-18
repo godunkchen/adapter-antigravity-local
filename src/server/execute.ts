@@ -37,6 +37,7 @@ import {
   refreshPaperclipWorkspaceEnvForExecution,
   readPaperclipIssueWorkModeFromContext,
   readPaperclipRuntimeSkillEntries,
+  runningProcesses,
   stringifyPaperclipWakePayload,
   parseObject,
   renderTemplate,
@@ -575,6 +576,64 @@ function isRecoveryWakePayload(value: unknown): boolean {
   return Boolean(rec.recovery || rec.reason === "source_scoped_recovery_action");
 }
 
+const MAX_SAFE_LIVE_LOG_SLICE_CHARS = 7500;
+
+/**
+ * Forwards stdout/stderr chunks to `onLog` in slices <= 7500 chars (preferring newline boundaries)
+ * so Paperclip's `heartbeat.ts` (`MAX_LIVE_LOG_CHUNK_BYTES = 8192`) never head-truncates large NDJSON
+ * lines when publishing `heartbeat.run.log` over WebSocket.
+ */
+async function forwardLogChunkInSafeSlices(
+  onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>,
+  stream: "stdout" | "stderr",
+  chunk: string,
+): Promise<void> {
+  if (chunk.length <= MAX_SAFE_LIVE_LOG_SLICE_CHARS) {
+    await onLog(stream, chunk);
+    return;
+  }
+
+  let offset = 0;
+  while (offset < chunk.length) {
+    const remaining = chunk.length - offset;
+    if (remaining <= MAX_SAFE_LIVE_LOG_SLICE_CHARS) {
+      await onLog(stream, chunk.slice(offset));
+      break;
+    }
+
+    const windowEnd = offset + MAX_SAFE_LIVE_LOG_SLICE_CHARS;
+    const lastNewline = chunk.lastIndexOf("\n", windowEnd - 1);
+    const splitAt = lastNewline > offset ? lastNewline + 1 : windowEnd;
+    await onLog(stream, chunk.slice(offset, splitAt));
+    offset = splitAt;
+  }
+}
+
+function buildPreStartupCancelledResult(billingType: AdapterBillingType = "subscription"): AdapterExecutionResult {
+  const acknowledgedAt = new Date().toISOString();
+  const result = {
+    exitCode: null,
+    signal: null,
+    timedOut: false,
+    errorMessage: "Stopped before provider startup",
+    errorCode: "cancelled",
+    billingType,
+    executionRecovery: {
+      kind: "bootstrap",
+      providerWorkStarted: false,
+    },
+    resultJson: {
+      status: "cancelled",
+      executionCancellation: {
+        state: "acknowledged",
+        acknowledgedAt,
+        forced: false,
+      },
+    },
+  };
+  return result as AdapterExecutionResult;
+}
+
 /**
  * Core execution engine function for Google Antigravity local CLI integrations.
  * Decomposes process preparation, remote SSH workspace syncs, Paperclip bridge handshakes, 
@@ -597,6 +656,9 @@ export async function execute(ctx: AntigravityExecutionContext): Promise<Adapter
     onRuntimeProgress,
     onExecutionPhase,
     onProviderStopped,
+    onCancellationReady,
+    stopRemoteStartup,
+    signal,
     authToken,
   } = ctx;
   const executionTarget = readAdapterExecutionTarget({
@@ -621,6 +683,11 @@ export async function execute(ctx: AntigravityExecutionContext): Promise<Adapter
   const configuredTimeoutSec = asNumber(config.timeoutSec, 0) || asNumber(config.timeout, 0);
   const sandbox = asBoolean(config.sandbox, false);
 
+  await onCancellationReady?.();
+  if (signal?.aborted) {
+    return buildPreStartupCancelledResult();
+  }
+
   console.log(`[antigravity] execute() called: runId="${runId}", command="${command}", model="${model}", effort="${rawEffort}", timeoutSec=${configuredTimeoutSec}, sandbox=${sandbox}`);
 
   await onExecutionPhase?.("prepare.workspace", {
@@ -633,6 +700,10 @@ export async function execute(ctx: AntigravityExecutionContext): Promise<Adapter
   let effectiveExecutionCwd = adapterExecutionTargetRemoteCwd(executionTarget, cwd);
 
   const { env, envConfig } = buildExecutionEnvironment(runId, agent, config, model, authToken);
+  const billingType = resolveAntigravityBillingType(env);
+  if (signal?.aborted) {
+    return buildPreStartupCancelledResult(billingType);
+  }
 
   const wakeTaskId =
     (typeof context.taskId === "string" && context.taskId.trim().length > 0 && context.taskId.trim()) ||
@@ -760,6 +831,15 @@ export async function execute(ctx: AntigravityExecutionContext): Promise<Adapter
     if (paperclipBridge) {
       Object.assign(env, paperclipBridge.env);
     }
+  }
+
+  if (signal?.aborted) {
+    await Promise.all([
+      stopRemoteStartup?.(),
+      paperclipBridge?.stop(),
+      restoreRemoteWorkspace?.(),
+    ]);
+    return buildPreStartupCancelledResult(billingType);
   }
 
   const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
@@ -934,6 +1014,62 @@ export async function execute(ctx: AntigravityExecutionContext): Promise<Adapter
       ? config.deltaThrottleMs
       : DEFAULT_ANTIGRAVITY_DELTA_THROTTLE_MS;
 
+  let spawnedProcessMeta: { pid: number; processGroupId: number | null } | null = null;
+  let forcedStop = false;
+  let forceKillTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const sendSignalToActiveProcess = (sig: NodeJS.Signals) => {
+    const tracked = runningProcesses.get(runId);
+    const pgid = tracked?.processGroupId ?? spawnedProcessMeta?.processGroupId ?? null;
+    const pid = tracked?.child.pid ?? spawnedProcessMeta?.pid ?? null;
+
+    if (process.platform !== "win32" && typeof pgid === "number" && pgid > 0) {
+      try {
+        process.kill(-pgid, sig);
+        return;
+      } catch {
+        // Fallback to direct child/pid signal below
+      }
+    }
+
+    if (tracked?.child && !tracked.child.killed) {
+      try {
+        tracked.child.kill(sig);
+        return;
+      } catch {
+        // Fallback to process.kill(pid)
+      }
+    }
+
+    if (typeof pid === "number" && pid > 0) {
+      try {
+        process.kill(pid, sig);
+      } catch {
+        // Process already exited
+      }
+    }
+  };
+
+  const terminateActiveProcess = () => {
+    void stopRemoteStartup?.();
+    sendSignalToActiveProcess("SIGTERM");
+    if (!forceKillTimer) {
+      const effectiveGraceSec = Math.max(1, graceSec);
+      forceKillTimer = setTimeout(() => {
+        forcedStop = true;
+        sendSignalToActiveProcess("SIGKILL");
+      }, effectiveGraceSec * 1000);
+      if (typeof forceKillTimer === "object" && "unref" in forceKillTimer) {
+        forceKillTimer.unref();
+      }
+    }
+  };
+
+  const onAbort = () => {
+    terminateActiveProcess();
+  };
+  signal?.addEventListener("abort", onAbort, { once: true });
+
   const runAttempt = async (resumeSessionId: string | null) => {
     await onExecutionPhase?.("prepare.session", {
       message: resumeSessionId ? `Resuming Antigravity session ${resumeSessionId}` : "Starting new Antigravity session",
@@ -1002,7 +1138,7 @@ export async function execute(ctx: AntigravityExecutionContext): Promise<Adapter
     let sawFirstStdoutChunk = false;
 
     const handleProcessLog = async (stream: "stdout" | "stderr", chunk: string) => {
-      await onLog(stream, chunk);
+      await forwardLogChunkInSafeSlices(onLog, stream, chunk);
       if (stream === "stdout") {
         if (!sawFirstStdoutChunk && chunk.trim().length > 0) {
           sawFirstStdoutChunk = true;
@@ -1017,12 +1153,20 @@ export async function execute(ctx: AntigravityExecutionContext): Promise<Adapter
       }
     };
 
+    const handleProcessSpawn = async (meta: { pid: number; processGroupId: number | null; startedAt: string }) => {
+      spawnedProcessMeta = { pid: meta.pid, processGroupId: meta.processGroupId };
+      await onSpawn?.(meta);
+      if (signal?.aborted) {
+        terminateActiveProcess();
+      }
+    };
+
     const result = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
       cwd,
       env,
       timeoutSec: processTimeoutSec,
       graceSec,
-      onSpawn,
+      onSpawn: handleProcessSpawn,
       onLog: handleProcessLog,
       terminalResultCleanup: {
         hasTerminalResult: hasAntigravityTerminalResult,
@@ -1034,11 +1178,16 @@ export async function execute(ctx: AntigravityExecutionContext): Promise<Adapter
   };
 
   try {
+    if (signal?.aborted) {
+      return buildPreStartupCancelledResult(billingType);
+    }
+
     let clearSessionOnMissingSession = false;
     let activeResumeSessionId: string | null = sessionId;
     let proc = await runAttempt(sessionId);
 
     if (
+      !signal?.aborted &&
       sessionId &&
       !proc.timedOut &&
       (proc.exitCode ?? 0) !== 0 &&
@@ -1053,8 +1202,15 @@ export async function execute(ctx: AntigravityExecutionContext): Promise<Adapter
       proc = await runAttempt(null);
     }
 
+    const wasCancelled = Boolean(signal?.aborted);
     await onProviderStopped?.({
-      reason: proc.timedOut ? "timeout" : (proc.exitCode ?? 0) === 0 ? "completed" : "failed",
+      reason: wasCancelled
+        ? "cancelled"
+        : proc.timedOut
+          ? "timeout"
+          : (proc.exitCode ?? 0) === 0
+            ? "completed"
+            : "failed",
       stoppedAt: new Date().toISOString(),
       exitCode: proc.exitCode,
       signal: proc.signal,
@@ -1062,15 +1218,60 @@ export async function execute(ctx: AntigravityExecutionContext): Promise<Adapter
     });
     await onExecutionPhase?.("adapter.postprocess", {
       message: "Post-processing Antigravity execution telemetry",
-      meta: { exitCode: proc.exitCode, timedOut: proc.timedOut },
+      meta: { exitCode: proc.exitCode, timedOut: proc.timedOut, cancelled: wasCancelled },
     });
 
-    const billingType = resolveAntigravityBillingType(env);
     const transportErrorCode =
       typeof (proc as unknown as Record<string, unknown>).errorCode === "string" &&
       ((proc as unknown as Record<string, unknown>).errorCode as string).trim().length > 0
         ? ((proc as unknown as Record<string, unknown>).errorCode as string).trim()
         : null;
+
+    if (wasCancelled) {
+      const rawStdout = proc.stdout.trim();
+      const rawStderr = proc.stderr.trim();
+      const cancelMetrics = extractAntigravityExecutionMetrics(rawStdout, rawStderr);
+      const extractedCancelSessionId = extractAntigravitySessionId(rawStdout, rawStderr) || activeResumeSessionId;
+      const acknowledgedAt = new Date().toISOString();
+      await onLog("stdout", "[paperclip] Stopping Antigravity run (cancellation acknowledged).\n");
+      return {
+        exitCode: proc.exitCode,
+        signal: proc.signal,
+        timedOut: false,
+        errorMessage: "Cancelled",
+        errorCode: "cancelled",
+        usage: cancelMetrics.usage,
+        sessionId: extractedCancelSessionId || null,
+        sessionParams: extractedCancelSessionId
+          ? {
+              sessionId: extractedCancelSessionId,
+              cwd: effectiveExecutionCwd,
+              ...(asString(workspaceContext.workspaceId, "") ? { workspaceId: workspaceContext.workspaceId } : {}),
+              ...(promptBundleKey ? { promptBundleKey } : {}),
+              ...(executionTargetIsRemote
+                ? { remoteExecution: adapterExecutionTargetSessionIdentity(runtimeExecutionTarget) }
+                : {}),
+            }
+          : null,
+        sessionDisplayId: extractedCancelSessionId || null,
+        provider: "google",
+        biller: "google",
+        model,
+        billingType,
+        costUsd: cancelMetrics.costUsd,
+        resultJson: {
+          ...(cancelMetrics.resultJson ?? {}),
+          status: "cancelled",
+          executionCancellation: {
+            state: "acknowledged",
+            acknowledgedAt,
+            forced: forcedStop || proc.signal === "SIGKILL",
+          },
+        },
+        summary: cancelMetrics.response ?? "",
+        question: null,
+      };
+    }
 
     if (proc.timedOut) {
       return {
@@ -1182,6 +1383,11 @@ export async function execute(ctx: AntigravityExecutionContext): Promise<Adapter
       ...(shouldClearSession ? { clearSession: true } : {}),
     };
   } finally {
+    signal?.removeEventListener("abort", onAbort);
+    if (forceKillTimer) {
+      clearTimeout(forceKillTimer);
+      forceKillTimer = null;
+    }
     await Promise.all([
       paperclipBridge?.stop(),
       restoreRemoteWorkspace?.(),

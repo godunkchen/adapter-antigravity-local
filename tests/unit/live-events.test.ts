@@ -351,4 +351,144 @@ describe("createAntigravityLiveEventBridge", () => {
       await fs.rm(tmpDir, { recursive: true, force: true });
     }
   });
+
+  it("deduplicates repeated ACTIVE/DONE updates for the same tool step and coalesces back-to-back identical tool calls", async () => {
+    const events: AdapterRuntimeEvent[] = [];
+    const bridge = createAntigravityLiveEventBridge({
+      onEvent: (event) => {
+        events.push(event);
+      },
+    });
+
+    // Step 2: run_command emitted twice as ACTIVE (e.g. usage update mid-tool) and once as DONE
+    await bridge.handleStdoutChunk(
+      [
+        JSON.stringify({
+          event: "step_update",
+          step_update: { step_index: 2, step_type: "tool", state: "ACTIVE", tool_name: "run_command" },
+        }),
+        JSON.stringify({
+          event: "step_update",
+          step_update: {
+            step_index: 2,
+            step_type: "tool",
+            state: "ACTIVE",
+            tool_name: "run_command",
+            usage: { total_tokens: 500 },
+          },
+        }),
+        JSON.stringify({
+          event: "step_update",
+          step_update: { step_index: 2, step_type: "tool", state: "DONE", tool_name: "run_command" },
+        }),
+        // Step 3 & Step 4: consecutive run_command steps with no assistant prose in between -> coalesced!
+        JSON.stringify({
+          event: "step_update",
+          step_update: { step_index: 3, step_type: "tool", state: "ACTIVE", tool_name: "run_command" },
+        }),
+        JSON.stringify({
+          event: "step_update",
+          step_update: { step_index: 3, step_type: "tool", state: "DONE", tool_name: "run_command" },
+        }),
+        JSON.stringify({
+          event: "step_update",
+          step_update: { step_index: 4, step_type: "tool", state: "ACTIVE", tool_name: "run_command" },
+        }),
+        JSON.stringify({
+          event: "step_update",
+          step_update: { step_index: 4, step_type: "tool", state: "DONE", tool_name: "run_command" },
+        }),
+        // Step 5: different tool (view_file) -> emitted!
+        JSON.stringify({
+          event: "step_update",
+          step_update: { step_index: 5, step_type: "tool", state: "ACTIVE", tool_name: "view_file" },
+        }),
+        JSON.stringify({
+          event: "step_update",
+          step_update: { step_index: 5, step_type: "tool", state: "DONE", tool_name: "view_file" },
+        }),
+      ].join("\n") + "\n",
+    );
+
+    expect(events.map((e) => e.message)).toEqual([
+      "Using run_command",
+      "Completed run_command",
+      "Using view_file",
+      "Completed view_file",
+    ]);
+  });
+
+  it("supports mid-run cancellation via AbortSignal and onCancellationReady and slices >8KB stdout chunks safely", async () => {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "agy-cancel-test-"));
+    const fakeAgyPath = path.join(tmpDir, "fake-agy-long.mjs");
+    try {
+      const largePayload = "x".repeat(16_000);
+      const scriptLines = [
+        `#!${process.execPath}`,
+        'console.log(JSON.stringify({ event: "init", conversation_id: "sess-cancel-1", init: { model: "gemini-4-argon" } }));',
+        `console.log(JSON.stringify({ event: "step_update", step_update: { step_index: 1, step_type: "tool", state: "DONE", tool_name: "view_file", tool_info: { output: ${JSON.stringify(largePayload)} } } }));`,
+        "setInterval(() => {}, 1000);",
+      ];
+      await fs.writeFile(fakeAgyPath, `${scriptLines.join("\n")}\n`, { mode: 0o755 });
+
+      const abortController = new AbortController();
+      let cancellationReadyCalled = false;
+      const logChunks: string[] = [];
+      const stoppedEvents: AdapterProviderStoppedEvent[] = [];
+
+      const res = await execute({
+        runId: "run-cancel-test",
+        agent: {
+          id: "agent-1",
+          companyId: "comp-1",
+          name: "Agy Cancel Agent",
+          adapterType: "antigravity_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: fakeAgyPath,
+          cwd: tmpDir,
+          graceSec: 2,
+        },
+        context: {},
+        signal: abortController.signal,
+        onCancellationReady: () => {
+          cancellationReadyCalled = true;
+        },
+        onLog: async (_stream, chunk) => {
+          logChunks.push(chunk);
+          if (chunk.includes("view_file")) {
+            abortController.abort();
+          }
+        },
+        onProviderStopped: async (stopped) => {
+          stoppedEvents.push(stopped);
+        },
+      });
+
+      expect(cancellationReadyCalled).toBe(true);
+      expect(res.errorCode).toBe("cancelled");
+      expect(res.errorMessage).toBe("Cancelled");
+      expect(res.sessionId).toBe("sess-cancel-1");
+      expect((res.resultJson as Record<string, unknown>)?.status).toBe("cancelled");
+      expect(
+        ((res.resultJson as Record<string, unknown>)?.executionCancellation as Record<string, unknown>)?.state,
+      ).toBe("acknowledged");
+      expect(stoppedEvents[0]?.reason).toBe("cancelled");
+
+      // Every forwarded log chunk must be <= 7500 chars so Paperclip's 8KB live WebSocket broadcaster never head-truncates
+      for (const chunk of logChunks) {
+        expect(chunk.length).toBeLessThanOrEqual(7500);
+      }
+    } finally {
+      await fs.rm(tmpDir, { recursive: true, force: true });
+    }
+  });
 });
+

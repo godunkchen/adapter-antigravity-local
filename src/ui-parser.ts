@@ -153,6 +153,166 @@ function formatUsageSummary(usage: Record<string, unknown>): string | null {
 }
 
 /**
+ * Detects whether a line that does not start with `{` is actually a mid-line sliced
+ * NDJSON tail fragment (caused by Paperclip's 8KB live WebSocket tail-slice or 256KB offset reads).
+ */
+function isLikelyJsonFragment(trimmed: string): boolean {
+  if (
+    trimmed.includes('"conversation_id":') ||
+    trimmed.includes('"step_update":') ||
+    trimmed.includes('"step_index":') ||
+    trimmed.includes('"step_type":') ||
+    trimmed.includes('"tool_info":') ||
+    trimmed.includes('"tool_name":') ||
+    trimmed.includes('"thinking_delta":') ||
+    trimmed.includes('"text_delta":') ||
+    trimmed.includes('"event":"') ||
+    trimmed.includes('"event": "')
+  ) {
+    return true;
+  }
+  if ((trimmed.endsWith("}") || trimmed.endsWith("}}") || trimmed.endsWith('"}')) && /"[a-zA-Z0-9_]+":/.test(trimmed)) {
+    return true;
+  }
+  return false;
+}
+
+function unescapePartialJsonString(raw: string): string {
+  return raw
+    .replace(/\\n/g, "\n")
+    .replace(/\\r/g, "\r")
+    .replace(/\\t/g, "\t")
+    .replace(/\\"/g, '"')
+    .replace(/\\\\/g, "\\");
+}
+
+function extractJsonStringField(line: string, fieldName: string): string {
+  const escapedField = fieldName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const completeRegex = new RegExp(`"${escapedField}"\\s*:\\s*"((?:\\\\.|[^"\\\\])*)"`);
+  const completeMatch = completeRegex.exec(line);
+  if (completeMatch && completeMatch[1] !== undefined) {
+    return unescapePartialJsonString(completeMatch[1]);
+  }
+  const partialRegex = new RegExp(`"${escapedField}"\\s*:\\s*"((?:\\\\.|[^"\\\\])*)$`);
+  const partialMatch = partialRegex.exec(line);
+  if (partialMatch && partialMatch[1] !== undefined) {
+    return unescapePartialJsonString(partialMatch[1]);
+  }
+  return "";
+}
+
+/**
+ * Best-effort salvage for a single NDJSON line starting with `{` that was truncated
+ * at the 256KB log page boundary (`RUN_LOG_PAGE_BYTES`) so the user still sees a clean
+ * human-readable entry instead of raw JSON or a poisoned parser buffer.
+ */
+function salvageTruncatedJsonLine(
+  trimmed: string,
+  ts: string,
+  activeTools: Map<string, { name: string; toolUseId: string; parameters: unknown }>,
+  emittedActiveToolIds: Set<string>,
+): TranscriptEntry[] {
+  const eventType = extractJsonStringField(trimmed, "event") || extractJsonStringField(trimmed, "type");
+  if (eventType === "init") {
+    const convId = extractJsonStringField(trimmed, "conversation_id") || extractJsonStringField(trimmed, "session_id");
+    const modelName = extractJsonStringField(trimmed, "model") || "gemini-3.6-flash";
+    return [{ kind: "init", ts, model: modelName, sessionId: convId }];
+  }
+
+  const stepType = (extractJsonStringField(trimmed, "step_type") || "").toLowerCase();
+  const state = (extractJsonStringField(trimmed, "state") || extractJsonStringField(trimmed, "status") || "").toUpperCase();
+  const toolName = extractJsonStringField(trimmed, "tool_name") || extractJsonStringField(trimmed, "name");
+
+  if (stepType === "tool" || Boolean(toolName)) {
+    const resolvedTool = (toolName || "tool").trim();
+    const stepIdxMatch = /"step_index"\s*:\s*(\d+)/.exec(trimmed);
+    const stepIdx = stepIdxMatch ? stepIdxMatch[1] : "truncated";
+    const convId = extractJsonStringField(trimmed, "conversation_id") || extractJsonStringField(trimmed, "session_id");
+    const rawToolUseId =
+      extractJsonStringField(trimmed, "tool_use_id") || `agy-tool-${stepIdx}-${resolvedTool}`;
+    const scopedToolUseId = convId ? `${convId}:${rawToolUseId}` : rawToolUseId;
+
+    if (
+      state === "DONE" ||
+      state === "COMPLETED" ||
+      state === "ERROR" ||
+      state === "FAILED" ||
+      state === "CANCELLED"
+    ) {
+      const isError = state === "ERROR" || state === "FAILED" || state === "CANCELLED" || /"is_error"\s*:\s*true/.test(trimmed);
+      const rawOutput =
+        extractJsonStringField(trimmed, "output") ||
+        extractJsonStringField(trimmed, "result") ||
+        extractJsonStringField(trimmed, "error");
+      const entries: TranscriptEntry[] = [];
+      if (!activeTools.has(scopedToolUseId) && !emittedActiveToolIds.has(scopedToolUseId)) {
+        emittedActiveToolIds.add(scopedToolUseId);
+        entries.push({
+          kind: "tool_call",
+          ts,
+          name: resolvedTool,
+          input: {},
+          toolUseId: rawToolUseId,
+        });
+      }
+      activeTools.delete(scopedToolUseId);
+      entries.push({
+        kind: "tool_result",
+        ts,
+        toolUseId: rawToolUseId,
+        toolName: resolvedTool,
+        content: rawOutput ? `${rawOutput}\n...[truncated]` : formatToolOutput(undefined, resolvedTool, isError),
+        isError,
+      });
+      return entries;
+    }
+
+    if (!emittedActiveToolIds.has(scopedToolUseId)) {
+      emittedActiveToolIds.add(scopedToolUseId);
+      activeTools.set(scopedToolUseId, { name: resolvedTool, toolUseId: rawToolUseId, parameters: {} });
+      return [
+        {
+          kind: "tool_call",
+          ts,
+          name: resolvedTool,
+          input: {},
+          toolUseId: rawToolUseId,
+        },
+      ];
+    }
+    return [];
+  }
+
+  const thinkingText =
+    extractJsonStringField(trimmed, "thinking_delta") ||
+    extractJsonStringField(trimmed, "thought_delta") ||
+    extractJsonStringField(trimmed, "thinking") ||
+    extractJsonStringField(trimmed, "thought");
+  if (thinkingText) {
+    return [{ kind: "thinking", ts, text: thinkingText, delta: true }];
+  }
+
+  const assistantText =
+    extractJsonStringField(trimmed, "text_delta") ||
+    extractJsonStringField(trimmed, "response") ||
+    (stepType === "agent_response" || stepType === "assistant" ? extractJsonStringField(trimmed, "text") : "");
+  if (assistantText) {
+    return [{ kind: "assistant", ts, text: assistantText, delta: true }];
+  }
+
+  return [];
+}
+
+function isNewJsonEventStart(trimmed: string): boolean {
+  return (
+    trimmed.startsWith('{"event"') ||
+    trimmed.startsWith('{ "event"') ||
+    trimmed.startsWith('{"type"') ||
+    trimmed.startsWith('{ "type"')
+  );
+}
+
+/**
  * Creates a stateful stdout stream parser for Antigravity CLI output.
  * Aligned with Paperclip's `paperclip-runner` and `cursor-local` transcript parsers:
  * - Preserves inter-token whitespace on `delta: true` entries so `appendTranscriptEntry` coalesces smoothly.
@@ -160,9 +320,12 @@ function formatUsageSummary(usage: Record<string, unknown>): string | null {
  *   assistant text so cumulative `DONE` step summaries or `result.response` payloads do not duplicate
  *   already-streamed text.
  * - Emits deduplicated `system` entries for internal `agy` orchestration steps.
+ * - Reassembles multi-line split JSON strings while resetting & salvaging whenever a new JSON event line starts
+ *   (preventing `defaultModuleParser` singleton poisoning and never emitting raw JSON).
  */
 function createStdoutParser() {
   const activeTools = new Map<string, { name: string; toolUseId: string; parameters: unknown }>();
+  const emittedActiveToolIds = new Set<string>();
   const streamedAssistantStepIds = new Set<string>();
   const streamedThinkingStepIds = new Set<string>();
   const emittedSystemStepStates = new Set<string>();
@@ -174,6 +337,7 @@ function createStdoutParser() {
 
   function resetTurnState() {
     activeTools.clear();
+    emittedActiveToolIds.clear();
     streamedAssistantStepIds.clear();
     streamedThinkingStepIds.clear();
     emittedSystemStepStates.clear();
@@ -192,14 +356,16 @@ function createStdoutParser() {
     eventObj: Record<string, unknown>,
     ts: string,
   ): TranscriptEntry[] {
+    const convPrefix = asString(eventObj.conversation_id) || asString(eventObj.session_id);
     const rawStepType = asString(update.step_type, asString(update.type)).trim();
     const stepType = rawStepType.toLowerCase();
     const rawState = asString(update.state, asString(update.status)).trim();
     const state = rawState.toUpperCase();
-    const stepKey =
+    const rawStepKey =
       update.step_index !== undefined && update.step_index !== null
         ? String(update.step_index)
         : asString(update.id) || "default-step";
+    const stepKey = convPrefix ? `${convPrefix}:${rawStepKey}` : rawStepKey;
     const entries: TranscriptEntry[] = [];
 
     // 1. Extract interim usage metrics if present -> emit SYSTEM kind
@@ -235,6 +401,7 @@ function createStdoutParser() {
         asString(toolInfoObj?.id) ||
         asString(update.call_id) ||
         `agy-tool-${stepIndex}-${toolName}`;
+      const scopedToolUseId = convPrefix ? `${convPrefix}:${toolUseId}` : toolUseId;
       const rawParameters =
         safeRecord(toolInfoObj?.parameters) ??
         safeRecord(toolInfoObj?.args) ??
@@ -255,14 +422,17 @@ function createStdoutParser() {
         state === "STARTED" ||
         state === "PENDING"
       ) {
-        activeTools.set(toolUseId, { name: toolName, toolUseId, parameters: rawParameters });
-        entries.push({
-          kind: "tool_call",
-          ts,
-          name: toolName,
-          input: rawParameters,
-          toolUseId,
-        });
+        if (!emittedActiveToolIds.has(scopedToolUseId)) {
+          emittedActiveToolIds.add(scopedToolUseId);
+          activeTools.set(scopedToolUseId, { name: toolName, toolUseId, parameters: rawParameters });
+          entries.push({
+            kind: "tool_call",
+            ts,
+            name: toolName,
+            input: rawParameters,
+            toolUseId,
+          });
+        }
         return entries;
       }
 
@@ -288,7 +458,8 @@ function createStdoutParser() {
           update.error;
         const content = formatToolOutput(rawOutput, toolName, isError);
 
-        if (!activeTools.has(toolUseId)) {
+        if (!activeTools.has(scopedToolUseId) && !emittedActiveToolIds.has(scopedToolUseId)) {
+          emittedActiveToolIds.add(scopedToolUseId);
           entries.push({
             kind: "tool_call",
             ts,
@@ -297,7 +468,7 @@ function createStdoutParser() {
             toolUseId,
           });
         }
-        activeTools.delete(toolUseId);
+        activeTools.delete(scopedToolUseId);
 
         entries.push({
           kind: "tool_result",
@@ -541,60 +712,82 @@ function createStdoutParser() {
     return [];
   }
 
+  function tryParseJsonEvent(candidateTrimmed: string, ts: string): TranscriptEntry[] | null {
+    try {
+      const eventObj = safeRecord(JSON.parse(candidateTrimmed));
+      if (eventObj && (typeof eventObj.event === "string" || typeof eventObj.type === "string")) {
+        return processEventObject(eventObj, ts);
+      }
+    } catch {
+      try {
+        const sanitized = candidateTrimmed.replace(/[\r\n]+/g, "\\n");
+        const eventObj = safeRecord(JSON.parse(sanitized));
+        if (eventObj && (typeof eventObj.event === "string" || typeof eventObj.type === "string")) {
+          return processEventObject(eventObj, ts);
+        }
+      } catch {
+        // Still incomplete
+      }
+    }
+    return null;
+  }
+
+  function flushTruncatedJsonBuffer(ts: string): TranscriptEntry[] {
+    if (!jsonBuffer) return [];
+    const pending = jsonBuffer.trim();
+    jsonBuffer = "";
+    if (!pending) return [];
+    return salvageTruncatedJsonLine(pending, ts, activeTools, emittedActiveToolIds);
+  }
+
   function parseLine(line: string, ts: string): TranscriptEntry[] {
     const trimmed = line.trim();
     if (!trimmed && !jsonBuffer) return [];
 
     // System log prefixes
     if (trimmed.startsWith("[antigravity]") || trimmed.startsWith("[paperclip]")) {
-      if (jsonBuffer) {
-        jsonBuffer = "";
-      }
-      return [{ kind: "system", ts, text: trimmed }];
+      const salvaged = flushTruncatedJsonBuffer(ts);
+      return [...salvaged, { kind: "system", ts, text: trimmed }];
     }
 
-    // Accumulate multi-line JSON chunks if jsonBuffer is active or line starts with {
-    const candidate = jsonBuffer ? `${jsonBuffer}\n${line}` : line;
-    const candidateTrimmed = candidate.trim();
-
-    if (candidateTrimmed.startsWith("{")) {
-      try {
-        const eventObj = safeRecord(JSON.parse(candidateTrimmed));
-        if (eventObj && (typeof eventObj.event === "string" || typeof eventObj.type === "string")) {
-          jsonBuffer = "";
-          return processEventObject(eventObj, ts);
-        }
-      } catch {
-        // Try sanitizing unescaped newlines in JSON strings
-        try {
-          const sanitized = candidateTrimmed.replace(/[\r\n]+/g, "\\n");
-          const eventObj = safeRecord(JSON.parse(sanitized));
-          if (eventObj && (typeof eventObj.event === "string" || typeof eventObj.type === "string")) {
-            jsonBuffer = "";
-            return processEventObject(eventObj, ts);
-          }
-        } catch {
-          // Still incomplete payload
-        }
-        jsonBuffer = candidate;
-        return [];
-      }
-    }
-
+    let salvagedFromPrevious: TranscriptEntry[] = [];
     if (jsonBuffer) {
-      const flushed = jsonBuffer;
-      jsonBuffer = "";
-      return [{ kind: "assistant", ts, text: flushed }];
+      if (trimmed && !isNewJsonEventStart(trimmed)) {
+        const combined = `${jsonBuffer}\n${line}`.trim();
+        const combinedParsed = tryParseJsonEvent(combined, ts);
+        if (combinedParsed !== null) {
+          jsonBuffer = "";
+          return combinedParsed;
+        }
+      }
+      salvagedFromPrevious = flushTruncatedJsonBuffer(ts);
+      if (!trimmed) {
+        return salvagedFromPrevious;
+      }
+    }
+
+    if (trimmed.startsWith("{")) {
+      const parsed = tryParseJsonEvent(trimmed, ts);
+      if (parsed !== null) {
+        return salvagedFromPrevious.length > 0 ? [...salvagedFromPrevious, ...parsed] : parsed;
+      }
+      jsonBuffer = line;
+      return salvagedFromPrevious;
+    }
+
+    // Suppress mid-line sliced NDJSON tail fragments (from 8KB WebSocket tail-slicing or 256KB offset reads)
+    if (isLikelyJsonFragment(trimmed)) {
+      return salvagedFromPrevious;
     }
 
     // Stderr / Errors
     const lower = trimmed.toLowerCase();
     if (lower.startsWith("error:") || lower.startsWith("fatal:") || lower.startsWith("traceback")) {
-      return [{ kind: "stderr", ts, text: trimmed }];
+      return [...salvagedFromPrevious, { kind: "stderr", ts, text: trimmed }];
     }
 
     // Fallback plain assistant message
-    return [{ kind: "assistant", ts, text: line }];
+    return [...salvagedFromPrevious, { kind: "assistant", ts, text: line }];
   }
 
   function reset() {

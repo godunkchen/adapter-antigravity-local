@@ -54,6 +54,9 @@ export interface AdapterRuntimeEvent {
 }
 
 export interface AntigravityExecutionContext extends AdapterExecutionContext {
+  signal?: AbortSignal;
+  onCancellationReady?: () => Promise<void> | void;
+  stopRemoteStartup?: () => Promise<void> | void;
   onEvent?: (event: AdapterRuntimeEvent) => Promise<void> | void;
   onRuntimeProgress?: (update: AdapterRuntimeProgressUpdate) => Promise<void> | void;
   onExecutionPhase?: (
@@ -116,16 +119,19 @@ export function createAntigravityLiveEventBridge(
   } = options;
 
   let lineBuffer = "";
-  let jsonBuffer = "";
   let pendingThinkingDelta = "";
   let pendingAssistantDelta = "";
   let firstBufferedDeltaAt: number | null = null;
   let lastDeltaFlushAt = 0;
   let toolCounter = 0;
+  let lastCoalescedToolName: string | null = null;
 
   const streamedAssistantStepIds = new Set<string>();
   const streamedThinkingStepIds = new Set<string>();
   const emittedStepStates = new Set<string>();
+  const emittedActiveToolIds = new Set<string>();
+  const emittedCompletedToolIds = new Set<string>();
+  const suppressedConsecutiveToolIds = new Set<string>();
 
   async function emitEvent(event: AdapterRuntimeEvent): Promise<void> {
     if (!onEvent) return;
@@ -146,6 +152,7 @@ export function createAntigravityLiveEventBridge(
       const snippet = formatLiveSnippet(pendingThinkingDelta, MAX_LIVE_SNIPPET_CHARS - 10);
       pendingThinkingDelta = "";
       if (snippet) {
+        lastCoalescedToolName = null;
         const message = `Thinking: ${snippet}`;
         await emitEvent({
           eventType: "thinking",
@@ -167,6 +174,7 @@ export function createAntigravityLiveEventBridge(
       const snippet = formatLiveSnippet(pendingAssistantDelta, MAX_LIVE_SNIPPET_CHARS);
       pendingAssistantDelta = "";
       if (snippet) {
+        lastCoalescedToolName = null;
         await emitEvent({
           eventType: "assistant.text_delta",
           stream: "stdout",
@@ -266,7 +274,16 @@ export function createAntigravityLiveEventBridge(
         state === "STARTED" ||
         state === "PENDING"
       ) {
+        if (emittedActiveToolIds.has(toolUseId)) {
+          return;
+        }
+        emittedActiveToolIds.add(toolUseId);
         await flushPendingDeltas();
+        if (lastCoalescedToolName === toolName) {
+          suppressedConsecutiveToolIds.add(toolUseId);
+          return;
+        }
+        lastCoalescedToolName = toolName;
         await emitEvent({
           eventType: "tool_call",
           stream: "stdout",
@@ -289,6 +306,10 @@ export function createAntigravityLiveEventBridge(
         state === "FAILED" ||
         state === "CANCELLED"
       ) {
+        if (emittedCompletedToolIds.has(toolUseId)) {
+          return;
+        }
+        emittedCompletedToolIds.add(toolUseId);
         await flushPendingDeltas();
         const isError =
           update.is_error === true ||
@@ -296,6 +317,14 @@ export function createAntigravityLiveEventBridge(
           state === "ERROR" ||
           state === "FAILED" ||
           state === "CANCELLED";
+        if (!isError && suppressedConsecutiveToolIds.has(toolUseId)) {
+          return;
+        }
+        if (isError) {
+          lastCoalescedToolName = null;
+        } else {
+          lastCoalescedToolName = toolName;
+        }
         const message = isError ? `Tool ${toolName} failed` : `Completed ${toolName}`;
         // Note: eventType intentionally omits "tool" and payload omits `toolName`/`name`/`title`
         // so Paperclip's `readLiveRunToolName` clears `currentToolName` once the tool finishes.
@@ -379,6 +408,7 @@ export function createAntigravityLiveEventBridge(
       const dedupKey = `${stepKey}:${state}:${rawStepType}:${stepLabel}`;
       if (!emittedStepStates.has(dedupKey)) {
         emittedStepStates.add(dedupKey);
+        lastCoalescedToolName = null;
         await flushPendingDeltas();
         const stateTag = state ? ` [${state.toLowerCase()}]` : "";
         const message =
@@ -408,6 +438,10 @@ export function createAntigravityLiveEventBridge(
       streamedAssistantStepIds.clear();
       streamedThinkingStepIds.clear();
       emittedStepStates.clear();
+      emittedActiveToolIds.clear();
+      emittedCompletedToolIds.clear();
+      suppressedConsecutiveToolIds.clear();
+      lastCoalescedToolName = null;
       const initObj = safeRecord(eventObj.init);
       const sessionId =
         asString(eventObj.conversation_id) ||
@@ -499,42 +533,32 @@ export function createAntigravityLiveEventBridge(
 
   async function processLine(line: string): Promise<void> {
     const trimmed = line.trim();
-    if (!trimmed && !jsonBuffer) return;
+    if (!trimmed) return;
 
     if (trimmed.startsWith("[antigravity]") || trimmed.startsWith("[paperclip]")) {
-      jsonBuffer = "";
       return;
     }
 
-    const candidate = jsonBuffer ? `${jsonBuffer}\n${line}` : line;
-    const candidateTrimmed = candidate.trim();
-
-    if (candidateTrimmed.startsWith("{")) {
+    if (trimmed.startsWith("{")) {
       try {
-        const eventObj = safeRecord(JSON.parse(candidateTrimmed));
+        const eventObj = safeRecord(JSON.parse(trimmed));
         if (eventObj && (typeof eventObj.event === "string" || typeof eventObj.type === "string")) {
-          jsonBuffer = "";
           await processEventObject(eventObj);
           return;
         }
       } catch {
         try {
-          const sanitized = candidateTrimmed.replace(/[\r\n]+/g, "\\n");
+          const sanitized = trimmed.replace(/[\r\n]+/g, "\\n");
           const eventObj = safeRecord(JSON.parse(sanitized));
           if (eventObj && (typeof eventObj.event === "string" || typeof eventObj.type === "string")) {
-            jsonBuffer = "";
             await processEventObject(eventObj);
             return;
           }
         } catch {
-          // Wait for remaining multi-line JSON chunk
+          // Ignore malformed single line so subsequent NDJSON lines are never poisoned
         }
-        jsonBuffer = candidate;
-        return;
       }
     }
-
-    jsonBuffer = "";
   }
 
   async function handleStdoutChunk(chunk: string): Promise<void> {
@@ -554,7 +578,6 @@ export function createAntigravityLiveEventBridge(
       lineBuffer = "";
       await processLine(remaining);
     }
-    jsonBuffer = "";
     await flushPendingDeltas();
   }
 

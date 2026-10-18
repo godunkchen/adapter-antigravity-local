@@ -359,6 +359,101 @@ describe("ui-parser", () => {
     const duplicate = parser.parseLine(stepLine, "2026-08-20T00:00:02Z");
     expect(duplicate).toEqual([]);
   });
+
+  it("never poisons subsequent NDJSON lines when a truncated JSON line occurs and salvages structured tool/assistant entries", () => {
+    const parser = createStdoutParser();
+
+    // 1. Truncated tool DONE line (e.g. cut off at 256KB RUN_LOG_PAGE_BYTES boundary)
+    const truncatedToolLine =
+      '{"event":"step_update","conversation_id":"conv-trunc","step_update":{"step_index":12,"step_type":"tool","state":"DONE","tool_name":"view_file","tool_info":{"name":"view_file","output":"line 1\\nline 2';
+    expect(parser.parseLine(truncatedToolLine, "2026-08-20T00:00:01Z")).toEqual([]);
+
+    // 2. Next valid NDJSON line starts with {"event":... -> salvages the truncated tool step AND parses the new line cleanly!
+    const nextValidLine = JSON.stringify({
+      event: "step_update",
+      conversation_id: "conv-trunc",
+      step_update: {
+        step_index: 13,
+        step_type: "agent_response",
+        text_delta: "Parsed cleanly after truncated line!",
+      },
+    });
+    expect(parser.parseLine(nextValidLine, "2026-08-20T00:00:02Z")).toEqual([
+      {
+        kind: "tool_call",
+        ts: "2026-08-20T00:00:02Z",
+        name: "view_file",
+        input: {},
+        toolUseId: "agy-tool-12-view_file",
+      },
+      {
+        kind: "tool_result",
+        ts: "2026-08-20T00:00:02Z",
+        toolUseId: "agy-tool-12-view_file",
+        toolName: "view_file",
+        content: "line 1\nline 2\n...[truncated]",
+        isError: false,
+      },
+      {
+        kind: "assistant",
+        ts: "2026-08-20T00:00:02Z",
+        text: "Parsed cleanly after truncated line!",
+        delta: true,
+      },
+    ]);
+  });
+
+  it("suppresses mid-line sliced NDJSON tail fragments caused by 8KB WebSocket tail-slicing or 256KB offset reads", () => {
+    const parser = createStdoutParser();
+
+    const tailFragment1 =
+      'file_content_tail\\n","is_error":false},"usage":{"input_tokens":14000,"output_tokens":300,"total_tokens":14300}}}';
+    const tailFragment2 =
+      '","step_index":8,"step_type":"tool","state":"DONE","tool_name":"run_command"}}';
+
+    expect(parser.parseLine(tailFragment1, "2026-08-20T00:00:01Z")).toEqual([]);
+    expect(parser.parseLine(tailFragment2, "2026-08-20T00:00:02Z")).toEqual([]);
+  });
+
+  it("deduplicates repeated ACTIVE step_update events for the same tool step", () => {
+    const parser = createStdoutParser();
+
+    const active1 = JSON.stringify({
+      event: "step_update",
+      conversation_id: "conv-dedup",
+      step_update: {
+        step_index: 7,
+        step_type: "tool",
+        state: "ACTIVE",
+        tool_name: "run_command",
+        tool_info: { name: "run_command", parameters: { CommandLine: "npm test" } },
+      },
+    });
+    const active2WithUsage = JSON.stringify({
+      event: "step_update",
+      conversation_id: "conv-dedup",
+      step_update: {
+        step_index: 7,
+        step_type: "tool",
+        state: "ACTIVE",
+        tool_name: "run_command",
+        tool_info: { name: "run_command", parameters: { CommandLine: "npm test" } },
+        usage: { input_tokens: 1000, output_tokens: 50, total_tokens: 1050 },
+      },
+    });
+
+    expect(parser.parseLine(active1, "2026-08-20T00:00:01Z")).toHaveLength(1);
+    const secondEntries = parser.parseLine(active2WithUsage, "2026-08-20T00:00:02Z");
+    // Only the usage system entry is emitted; duplicate tool_call is suppressed
+    expect(secondEntries).toEqual([
+      {
+        kind: "system",
+        ts: "2026-08-20T00:00:02Z",
+        text: "usage updated: 1050/200000 (1050/200000 ctx)",
+      },
+    ]);
+  });
 });
+
 
 

@@ -13,6 +13,17 @@ export {
   resolveAntigravityBillingType,
   agySessionCwdMatchesExecutionTarget,
 } from "./execute.js";
+export {
+  createAntigravityLiveEventBridge,
+  DEFAULT_ANTIGRAVITY_DELTA_THROTTLE_MS,
+  type AdapterExecutionPhase,
+  type AdapterRuntimeProgressUpdate,
+  type AdapterProviderStoppedEvent,
+  type AdapterRuntimeEvent,
+  type AntigravityExecutionContext,
+  type AntigravityLiveEventBridge,
+  type AntigravityLiveEventBridgeOptions,
+} from "./live-events.js";
 export { listAntigravitySkills, syncAntigravitySkills } from "./skills.js";
 export { testEnvironment, probeAntigravityPlugins } from "./test.js";
 export { getConfigSchema } from "./config-schema.js";

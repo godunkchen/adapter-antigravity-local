@@ -194,5 +194,171 @@ describe("ui-parser", () => {
       text: "Plain log message",
     });
   });
+
+  it("parses thinking_delta and step_type thinking into thinking transcript entries with delta: true", () => {
+    const parser = createStdoutParser();
+
+    const deltaLine = JSON.stringify({
+      event: "step_update",
+      step_update: {
+        step_index: 3,
+        step_type: "thinking",
+        thinking_delta: "Analyzing the repository ",
+      },
+    });
+    const deltaEntries = parser.parseLine(deltaLine, "2026-08-20T00:00:01Z");
+    expect(deltaEntries).toEqual([
+      {
+        kind: "thinking",
+        ts: "2026-08-20T00:00:01Z",
+        text: "Analyzing the repository ",
+        delta: true,
+      },
+    ]);
+
+    // Trailing cumulative thinking on DONE for the same step_index is deduplicated
+    const doneLine = JSON.stringify({
+      event: "step_update",
+      step_update: {
+        step_index: 3,
+        step_type: "thinking",
+        state: "DONE",
+        thinking: "Analyzing the repository structure.",
+      },
+    });
+    const doneEntries = parser.parseLine(doneLine, "2026-08-20T00:00:02Z");
+    expect(doneEntries).toEqual([]);
+  });
+
+  it("deduplicates cumulative step_update DONE text and result.response when text_delta was already streamed", () => {
+    const parser = createStdoutParser();
+
+    const chunk1 = JSON.stringify({
+      event: "step_update",
+      step_update: {
+        step_index: 5,
+        step_type: "agent_response",
+        text_delta: "Phase 5 ",
+      },
+    });
+    const chunk2 = JSON.stringify({
+      event: "step_update",
+      step_update: {
+        step_index: 5,
+        step_type: "agent_response",
+        text_delta: "is complete.",
+      },
+    });
+    const doneStep = JSON.stringify({
+      event: "step_update",
+      step_update: {
+        step_index: 5,
+        step_type: "agent_response",
+        state: "DONE",
+        text: "Phase 5 is complete.",
+      },
+    });
+    const resultEvent = JSON.stringify({
+      event: "result",
+      result: {
+        status: "SUCCESS",
+        response: "Phase 5 is complete.",
+        usage: { input_tokens: 200, output_tokens: 10 },
+      },
+    });
+
+    expect(parser.parseLine(chunk1, "2026-08-20T00:00:01Z")).toEqual([
+      { kind: "assistant", ts: "2026-08-20T00:00:01Z", text: "Phase 5 ", delta: true },
+    ]);
+    expect(parser.parseLine(chunk2, "2026-08-20T00:00:02Z")).toEqual([
+      { kind: "assistant", ts: "2026-08-20T00:00:02Z", text: "is complete.", delta: true },
+    ]);
+    // Cumulative text on DONE step is suppressed because step 5 already streamed deltas
+    expect(parser.parseLine(doneStep, "2026-08-20T00:00:03Z")).toEqual([]);
+
+    // Terminal result event emits only the `result` entry without duplicating the assistant prose
+    const resultEntries = parser.parseLine(resultEvent, "2026-08-20T00:00:04Z");
+    expect(resultEntries).toHaveLength(1);
+    expect(resultEntries[0]?.kind).toBe("result");
+  });
+
+  it("parses tool ERROR/FAILED states and alternate tool_call/args schemas", () => {
+    const parser = createStdoutParser();
+
+    const activeLine = JSON.stringify({
+      type: "step",
+      step: {
+        id: "step-42",
+        type: "tool",
+        status: "RUNNING",
+        tool_call: {
+          id: "call-42",
+          name: "run_command",
+          args: { CommandLine: "npm test" },
+        },
+      },
+    });
+    expect(parser.parseLine(activeLine, "2026-08-20T00:00:01Z")).toEqual([
+      {
+        kind: "tool_call",
+        ts: "2026-08-20T00:00:01Z",
+        name: "run_command",
+        input: { CommandLine: "npm test" },
+        toolUseId: "call-42",
+      },
+    ]);
+
+    const errorLine = JSON.stringify({
+      type: "step",
+      step: {
+        id: "step-42",
+        type: "tool",
+        status: "ERROR",
+        tool_call: {
+          id: "call-42",
+          name: "run_command",
+          error: "Command exited with code 1",
+        },
+      },
+    });
+    expect(parser.parseLine(errorLine, "2026-08-20T00:00:02Z")).toEqual([
+      {
+        kind: "tool_result",
+        ts: "2026-08-20T00:00:02Z",
+        toolUseId: "call-42",
+        toolName: "run_command",
+        content: "Command exited with code 1",
+        isError: true,
+      },
+    ]);
+  });
+
+  it("emits deduplicated system transcript entries for non-tool internal orchestration step_update events", () => {
+    const parser = createStdoutParser();
+
+    const stepLine = JSON.stringify({
+      event: "step_update",
+      step_update: {
+        step_index: 9,
+        step_type: "planning",
+        state: "ACTIVE",
+        title: "Formulating execution plan",
+      },
+    });
+
+    const first = parser.parseLine(stepLine, "2026-08-20T00:00:01Z");
+    expect(first).toEqual([
+      {
+        kind: "system",
+        ts: "2026-08-20T00:00:01Z",
+        text: "step (planning) [active]: Formulating execution plan",
+      },
+    ]);
+
+    // Identical state update is deduplicated
+    const duplicate = parser.parseLine(stepLine, "2026-08-20T00:00:02Z");
+    expect(duplicate).toEqual([]);
+  });
 });
+
 

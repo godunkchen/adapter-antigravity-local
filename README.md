@@ -3,7 +3,7 @@
 [![npm version](https://img.shields.io/npm/v/@weslleycapelari/adapter-antigravity-local.svg?style=flat-square)](https://www.npmjs.com/package/@weslleycapelari/adapter-antigravity-local)
 [![Build & Test Status](https://img.shields.io/github/actions/workflow/status/weslleycapelari/adapter-antigravity-local/publish.yml?style=flat-square)](https://github.com/weslleycapelari/adapter-antigravity-local/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square)](LICENSE)
-[![Tests Passed](https://img.shields.io/badge/Tests--Passed-126%20/%20126-brightgreen?style=flat-square)](tests)
+[![Tests Passed](https://img.shields.io/badge/Tests--Passed-135%20/%20135-brightgreen?style=flat-square)](tests)
 
 An official-grade, high-performance **Paperclip AI** adapter designed for running **Google Antigravity** (`agy` CLI `v1.3.6+`) agents locally and on remote execution targets, with full lifecycle and telemetry parity with `@paperclipai/adapter-claude-local`.
 
@@ -14,6 +14,7 @@ This adapter acts as a drop-in, robust, and type-safe replacement for the deprec
 ## ⚡ Key Features
 
 - **🚀 Native Go CLI Performance (`agy` v1.3.6)**: Spawns the `agy` binary with fast startup times, automatic `~/.local/bin` PATH resolution, and real-time `stream-json` event streaming.
+- **📡 Dual-Channel Live Streaming Telemetry (`ctx.onEvent` + `ui-parser.ts`)**: Bridges real-time `agy` `stream-json` NDJSON events (`init`, `tool_call`, `step.completed`/`step.failed`, `thinking_delta`, `text_delta`, `step_update`, `result`) into both Paperclip's server-side `HeartbeatRunRuntimeStatus` (`1500ms` delta throttling, immediate tool state transitions) and the browser WebWorker transcript parser with stateful cumulative-text deduplication. See **[Design Specification: Live Interaction & Streaming](./docs/design-spec-live-interaction-and-streaming.md)**.
 - **📊 Live Model & Quota Discovery**: Queries `agy models --output-format json` (with text fallback) for dynamic model discovery and `agy -p "/usage" --output-format json` via `getQuotaWindows()` for per-model quota & AI credit tracking.
 - **🔄 Resilient Session Lifecycle (`sessionCodec`)**: Tracks `cwd`, `promptBundleKey` (SHA-256 fingerprint to skip redundant instructions/skills injection on resumed turns), and `remoteExecution` identity, with automatic fresh-session retry if a conversation is missing or contains corrupted media (`v1.3.4+`).
 - **📂 Multi-Workspace Sync**: Automatically registers and mounts multiple active Paperclip workspaces into `agy` using repeatable `--add-dir <cwd>` arguments.

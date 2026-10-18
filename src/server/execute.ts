@@ -63,6 +63,11 @@ import {
   isAntigravityTurnLimitResult,
   isAntigravityUnknownSessionError,
 } from "./parse.js";
+import {
+  createAntigravityLiveEventBridge,
+  DEFAULT_ANTIGRAVITY_DELTA_THROTTLE_MS,
+  type AntigravityExecutionContext,
+} from "./live-events.js";
 import { firstNonEmptyLine } from "../utils.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
@@ -578,8 +583,22 @@ function isRecoveryWakePayload(value: unknown): boolean {
  * @param ctx - The unified adapter execution context containing metadata, configurations, and logs handlers.
  * @returns A promise resolving to the final adapter execution output structure.
  */
-export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
-  const { runId, agent, runtime, config, context, onLog, onMeta, onSpawn, authToken } = ctx;
+export async function execute(ctx: AntigravityExecutionContext): Promise<AdapterExecutionResult> {
+  const {
+    runId,
+    agent,
+    runtime,
+    config,
+    context,
+    onLog,
+    onMeta,
+    onSpawn,
+    onEvent,
+    onRuntimeProgress,
+    onExecutionPhase,
+    onProviderStopped,
+    authToken,
+  } = ctx;
   const executionTarget = readAdapterExecutionTarget({
     executionTarget: ctx.executionTarget,
     legacyRemoteExecution: ctx.executionTransport?.remoteExecution,
@@ -603,6 +622,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const sandbox = asBoolean(config.sandbox, false);
 
   console.log(`[antigravity] execute() called: runId="${runId}", command="${command}", model="${model}", effort="${rawEffort}", timeoutSec=${configuredTimeoutSec}, sandbox=${sandbox}`);
+
+  await onExecutionPhase?.("prepare.workspace", {
+    message: "Preparing Antigravity workspace and environment",
+    meta: { remote: executionTargetIsRemote },
+  });
 
   const workspaceContext = parseObject(context.paperclipWorkspace);
   const { cwd, effectiveWorkspaceCwd } = await resolveEffectiveCwd(config, workspaceContext);
@@ -905,7 +929,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     return { prompt, promptMetrics };
   };
 
+  const deltaThrottleMs =
+    typeof config.deltaThrottleMs === "number" && Number.isFinite(config.deltaThrottleMs) && config.deltaThrottleMs >= 0
+      ? config.deltaThrottleMs
+      : DEFAULT_ANTIGRAVITY_DELTA_THROTTLE_MS;
+
   const runAttempt = async (resumeSessionId: string | null) => {
+    await onExecutionPhase?.("prepare.session", {
+      message: resumeSessionId ? `Resuming Antigravity session ${resumeSessionId}` : "Starting new Antigravity session",
+      meta: { sessionId: resumeSessionId, model },
+    });
     const { prompt, promptMetrics } = buildAttemptPrompt(resumeSessionId);
     const rawWorkspaces = Array.isArray(context.paperclipWorkspaces) ? context.paperclipWorkspaces : [];
     const workspaces = [...rawWorkspaces];
@@ -951,17 +984,53 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       });
     }
 
-    return await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
+    await onExecutionPhase?.("adapter.invoke", {
+      message: `Launching ${command} (${model})`,
+      meta: { command: resolvedCommand, model, sessionId: resumeSessionId },
+    });
+    await onRuntimeProgress?.({
+      phase: "adapter.invoke",
+      state: "waiting_for_first_event",
+      message: "Waiting for Antigravity output",
+      detail: { model, sessionId: resumeSessionId },
+    });
+
+    const liveEventBridge = createAntigravityLiveEventBridge({
+      onEvent,
+      throttleMs: deltaThrottleMs,
+    });
+    let sawFirstStdoutChunk = false;
+
+    const handleProcessLog = async (stream: "stdout" | "stderr", chunk: string) => {
+      await onLog(stream, chunk);
+      if (stream === "stdout") {
+        if (!sawFirstStdoutChunk && chunk.trim().length > 0) {
+          sawFirstStdoutChunk = true;
+          await onRuntimeProgress?.({
+            phase: "adapter.invoke",
+            state: "streaming_output",
+            message: "Receiving Antigravity stream-json telemetry",
+            detail: { model },
+          });
+        }
+        await liveEventBridge.handleStdoutChunk(chunk);
+      }
+    };
+
+    const result = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
       cwd,
       env,
       timeoutSec: processTimeoutSec,
       graceSec,
       onSpawn,
-      onLog,
+      onLog: handleProcessLog,
       terminalResultCleanup: {
         hasTerminalResult: hasAntigravityTerminalResult,
       },
     });
+
+    await liveEventBridge.flush();
+    return result;
   };
 
   try {
@@ -983,6 +1052,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       activeResumeSessionId = null;
       proc = await runAttempt(null);
     }
+
+    await onProviderStopped?.({
+      reason: proc.timedOut ? "timeout" : (proc.exitCode ?? 0) === 0 ? "completed" : "failed",
+      stoppedAt: new Date().toISOString(),
+      exitCode: proc.exitCode,
+      signal: proc.signal,
+      timedOut: proc.timedOut,
+    });
+    await onExecutionPhase?.("adapter.postprocess", {
+      message: "Post-processing Antigravity execution telemetry",
+      meta: { exitCode: proc.exitCode, timedOut: proc.timedOut },
+    });
 
     const billingType = resolveAntigravityBillingType(env);
     const transportErrorCode =

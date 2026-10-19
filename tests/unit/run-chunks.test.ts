@@ -23,15 +23,27 @@ describe("run cb8af9ad log chunks evaluation", () => {
       : exports) as Record<string, any>;
 
     const testLines = [
-      '{"event":"init","conversation_id":"7c24150d-0e36-422a-99da-2d836e5abb5e","init":{"model":"gemini-3.6-flash","cwd":"/home/ubuntu"}}',
-      '{"event":"step_update","step_update":{"conversation_id":"7c24150d","step_index":2,"state":"DONE","step_type":"agent_response","usage":{"input_tokens":15690,"output_tokens":240,"total_tokens":15930}}}',
-      '{"event":"step_update","step_update":{"conversation_id":"7c24150d","step_index":3,"state":"ACTIVE","step_type":"tool","tool_name":"run_command","tool_info":{"name":"run_command","parameters":{"CommandLine":"pwd && ls -la"}}}}',
-      '{"event":"step_update","step_update":{"conversation_id":"7c24150d","step_index":3,"state":"DONE","step_type":"tool","tool_name":"run_command","duration_seconds":0.08,"tool_info":{"name":"run_command","parameters":{"CommandLine":"pwd && ls -la"},"output":"/home/ubuntu\\ntotal 464"}}}',
+      {
+        line: '{"event":"init","conversation_id":"7c24150d-0e36-422a-99da-2d836e5abb5e","init":{"model":"gemini-3.6-flash","cwd":"/home/ubuntu"}}',
+        expectedCount: 1,
+      },
+      {
+        line: '{"event":"step_update","step_update":{"conversation_id":"7c24150d","step_index":2,"state":"DONE","step_type":"agent_response","usage":{"input_tokens":15690,"output_tokens":240,"total_tokens":15930}}}',
+        expectedCount: 0,
+      },
+      {
+        line: '{"event":"step_update","step_update":{"conversation_id":"7c24150d","step_index":3,"state":"ACTIVE","step_type":"tool","tool_name":"run_command","tool_info":{"name":"run_command","parameters":{"CommandLine":"pwd && ls -la"}}}}',
+        expectedCount: 1,
+      },
+      {
+        line: '{"event":"step_update","step_update":{"conversation_id":"7c24150d","step_index":3,"state":"DONE","step_type":"tool","tool_name":"run_command","duration_seconds":0.08,"tool_info":{"name":"run_command","parameters":{"CommandLine":"pwd && ls -la"},"output":"/home/ubuntu\\ntotal 464"}}}',
+        expectedCount: 1,
+      },
     ];
 
-    for (const line of testLines) {
+    for (const { line, expectedCount } of testLines) {
       const entries = resolved.parseStdoutLine(line, "2026-08-20T00:00:00Z");
-      expect(entries.length).toBeGreaterThan(0);
+      expect(entries).toHaveLength(expectedCount);
     }
   });
 
@@ -52,6 +64,7 @@ describe("run cb8af9ad log chunks evaluation", () => {
       name: "run_command",
       input: {
         CommandLine: "echo hello\n\nworld",
+        command: "echo hello\n\nworld",
       },
       toolUseId: "agy-tool-93-run_command",
     });

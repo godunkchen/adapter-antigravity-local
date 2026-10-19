@@ -64,7 +64,11 @@ describe("ui-parser", () => {
       kind: "tool_call",
       ts: "2026-08-20T00:00:00Z",
       name: "grep_search",
-      input: { Query: "PAPERCLIP_API_KEY", SearchPath: "/tmp" },
+      input: {
+        Query: "PAPERCLIP_API_KEY",
+        SearchPath: "/tmp",
+        query: "PAPERCLIP_API_KEY in /tmp",
+      },
       toolUseId: "agy-tool-21-grep_search",
     });
 
@@ -116,7 +120,7 @@ describe("ui-parser", () => {
     });
   });
 
-  it("emits token usage system entries matching paperclip usage format", () => {
+  it("does not emit noisy interim usage system entries on step_update so tool/command grouping stays contiguous", () => {
     const parser = createStdoutParser();
     const line = JSON.stringify({
       event: "step_update",
@@ -135,18 +139,14 @@ describe("ui-parser", () => {
     });
 
     const entries = parser.parseLine(line, "2026-08-20T00:00:00Z");
-    expect(entries).toHaveLength(2);
-    expect(entries[0]).toEqual({
-      kind: "system",
-      ts: "2026-08-20T00:00:00Z",
-      text: "usage updated: 14647/200000 (14647/200000 ctx)",
-    });
-    expect(entries[1]).toEqual({
-      kind: "assistant",
-      ts: "2026-08-20T00:00:00Z",
-      text: "Response text",
-      delta: true,
-    });
+    expect(entries).toEqual([
+      {
+        kind: "assistant",
+        ts: "2026-08-20T00:00:00Z",
+        text: "Response text",
+        delta: true,
+      },
+    ]);
   });
 
   it("parses result events into structured result and assistant transcript entries", () => {
@@ -303,7 +303,7 @@ describe("ui-parser", () => {
         kind: "tool_call",
         ts: "2026-08-20T00:00:01Z",
         name: "run_command",
-        input: { CommandLine: "npm test" },
+        input: { CommandLine: "npm test", command: "npm test" },
         toolUseId: "call-42",
       },
     ]);
@@ -365,7 +365,7 @@ describe("ui-parser", () => {
 
     // 1. Truncated tool DONE line (e.g. cut off at 256KB RUN_LOG_PAGE_BYTES boundary)
     const truncatedToolLine =
-      '{"event":"step_update","conversation_id":"conv-trunc","step_update":{"step_index":12,"step_type":"tool","state":"DONE","tool_name":"view_file","tool_info":{"name":"view_file","output":"line 1\\nline 2';
+      '{"event":"step_update","conversation_id":"conv-trunc","step_update":{"step_index":12,"step_type":"tool","state":"DONE","tool_name":"view_file","tool_info":{"name":"view_file","parameters":{"AbsolutePath":"/src/app.ts"},"output":"line 1\\nline 2';
     expect(parser.parseLine(truncatedToolLine, "2026-08-20T00:00:01Z")).toEqual([]);
 
     // 2. Next valid NDJSON line starts with {"event":... -> salvages the truncated tool step AND parses the new line cleanly!
@@ -383,7 +383,7 @@ describe("ui-parser", () => {
         kind: "tool_call",
         ts: "2026-08-20T00:00:02Z",
         name: "view_file",
-        input: {},
+        input: { AbsolutePath: "/src/app.ts", path: "/src/app.ts" },
         toolUseId: "agy-tool-12-view_file",
       },
       {
@@ -444,12 +444,28 @@ describe("ui-parser", () => {
 
     expect(parser.parseLine(active1, "2026-08-20T00:00:01Z")).toHaveLength(1);
     const secondEntries = parser.parseLine(active2WithUsage, "2026-08-20T00:00:02Z");
-    // Only the usage system entry is emitted; duplicate tool_call is suppressed
-    expect(secondEntries).toEqual([
+    // Duplicate ACTIVE tool_call and interim usage are both suppressed
+    expect(secondEntries).toEqual([]);
+  });
+
+  it("repairs Paperclip secret-redactor broken escaped quotes (***REDACTED***\") in NDJSON lines", () => {
+    const parser = createStdoutParser();
+
+    // When Paperclip's sanitizeLogChunk replaces `os.environ[\"` with `***REDACTED***`, it leaves an unescaped `"` before PAPERCLIP_API_KEY
+    const redactedLine =
+      '{"event":"step_update","conversation_id":"conv-redacted","step_update":{"step_index":437,"state":"ACTIVE","step_type":"tool","tool_name":"run_command","tool_info":{"name":"run_command","parameters":{"CommandLine":"python3 -c \'import os; key = ***REDACTED***"PAPERCLIP_API_KEY\\"]\'"}}}}';
+
+    const entries = parser.parseLine(redactedLine, "2026-08-20T00:00:01Z");
+    expect(entries).toEqual([
       {
-        kind: "system",
-        ts: "2026-08-20T00:00:02Z",
-        text: "usage updated: 1050/200000 (1050/200000 ctx)",
+        kind: "tool_call",
+        ts: "2026-08-20T00:00:01Z",
+        name: "run_command",
+        input: {
+          CommandLine: 'python3 -c \'import os; key = ***REDACTED***"PAPERCLIP_API_KEY"]\'',
+          command: 'python3 -c \'import os; key = ***REDACTED***"PAPERCLIP_API_KEY"]\'',
+        },
+        toolUseId: "agy-tool-437-run_command",
       },
     ]);
   });

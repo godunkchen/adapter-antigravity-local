@@ -138,18 +138,79 @@ function formatToolOutput(
 }
 
 /**
- * Formats usage metrics matching Paperclip system usage entries for step updates.
+ * Normalizes Antigravity tool input parameters (PascalCase keys like CommandLine, AbsolutePath,
+ * TargetFile, Query, Pattern, SearchPath, Url) to also include standard lowercase keys expected by
+ * Paperclip's RunTranscriptView (`command`, `cwd`, `path`, `query`, `url`, `prompt`, `message`).
+ * This allows RunTranscriptView to:
+ * - Recognize `run_command` as a command execution (`isCommandTool === true`) and group consecutive
+ *   commands into collapsible `command_group` blocks.
+ * - Display human-readable command strings, file paths, and search queries in compact/normal mode
+ *   instead of fallback labels like `"CommandLine payload"` or `"AbsolutePath payload"`.
  */
-function formatUsageSummary(usage: Record<string, unknown>): string | null {
-  const inTokens = asNumber(usage.input_tokens, asNumber(usage.inputTokens, 0));
-  const outTokens = asNumber(usage.output_tokens, asNumber(usage.outputTokens, 0));
-  const totalTokens = asNumber(usage.total_tokens, inTokens + outTokens);
+function normalizeToolInput(
+  rawParameters: Record<string, unknown>,
+): Record<string, unknown> {
+  const normalized: Record<string, unknown> = { ...rawParameters };
 
-  if (totalTokens === 0 && inTokens === 0 && outTokens === 0) {
-    return null;
+  const commandLine = asString(rawParameters.CommandLine) || asString(rawParameters.command);
+  if (commandLine && typeof normalized.command !== "string") {
+    normalized.command = commandLine;
+  }
+  const cwd = asString(rawParameters.Cwd) || asString(rawParameters.cwd);
+  if (cwd && typeof normalized.cwd !== "string") {
+    normalized.cwd = cwd;
   }
 
-  return `usage updated: ${totalTokens}/200000 (${totalTokens}/200000 ctx)`;
+  const filePath =
+    asString(rawParameters.AbsolutePath) ||
+    asString(rawParameters.TargetFile) ||
+    asString(rawParameters.DirectoryPath) ||
+    asString(rawParameters.File);
+  if (filePath && typeof normalized.path !== "string") {
+    normalized.path = filePath;
+  }
+
+  const searchQuery = asString(rawParameters.Query) || asString(rawParameters.Pattern);
+  const searchScope = asString(rawParameters.SearchPath) || asString(rawParameters.SearchDirectory);
+  if (searchQuery && typeof normalized.query !== "string") {
+    normalized.query = searchScope ? `${searchQuery} in ${searchScope}` : searchQuery;
+  } else if (searchScope && typeof normalized.path !== "string" && !searchQuery) {
+    normalized.path = searchScope;
+  }
+
+  const url = asString(rawParameters.Url);
+  if (url && typeof normalized.url !== "string") {
+    normalized.url = url;
+  }
+
+  const promptText =
+    asString(rawParameters.Prompt) ||
+    asString(rawParameters.Instruction) ||
+    asString(rawParameters.Description);
+  if (
+    promptText &&
+    typeof normalized.prompt !== "string" &&
+    !commandLine &&
+    !filePath &&
+    !searchQuery &&
+    !url
+  ) {
+    normalized.prompt = promptText;
+  }
+
+  const messageText = asString(rawParameters.Message) || asString(rawParameters.Input);
+  if (
+    messageText &&
+    typeof normalized.message !== "string" &&
+    !commandLine &&
+    !filePath &&
+    !searchQuery &&
+    !url
+  ) {
+    normalized.message = messageText;
+  }
+
+  return normalized;
 }
 
 /**
@@ -201,6 +262,29 @@ function extractJsonStringField(line: string, fieldName: string): string {
   return "";
 }
 
+function extractSalvagedToolInput(trimmed: string): Record<string, unknown> {
+  const rawParams: Record<string, unknown> = {};
+  const cmdLine =
+    extractJsonStringField(trimmed, "CommandLine") || extractJsonStringField(trimmed, "command");
+  if (cmdLine) rawParams.CommandLine = cmdLine;
+  const cwd = extractJsonStringField(trimmed, "Cwd") || extractJsonStringField(trimmed, "cwd");
+  if (cwd) rawParams.Cwd = cwd;
+  const absPath =
+    extractJsonStringField(trimmed, "AbsolutePath") ||
+    extractJsonStringField(trimmed, "TargetFile") ||
+    extractJsonStringField(trimmed, "DirectoryPath");
+  if (absPath) rawParams.AbsolutePath = absPath;
+  const query = extractJsonStringField(trimmed, "Query") || extractJsonStringField(trimmed, "Pattern");
+  if (query) rawParams.Query = query;
+  const searchPath =
+    extractJsonStringField(trimmed, "SearchPath") ||
+    extractJsonStringField(trimmed, "SearchDirectory");
+  if (searchPath) rawParams.SearchPath = searchPath;
+  const url = extractJsonStringField(trimmed, "Url");
+  if (url) rawParams.Url = url;
+  return normalizeToolInput(rawParams);
+}
+
 /**
  * Best-effort salvage for a single NDJSON line starting with `{` that was truncated
  * at the 256KB log page boundary (`RUN_LOG_PAGE_BYTES`) so the user still sees a clean
@@ -231,6 +315,7 @@ function salvageTruncatedJsonLine(
     const rawToolUseId =
       extractJsonStringField(trimmed, "tool_use_id") || `agy-tool-${stepIdx}-${resolvedTool}`;
     const scopedToolUseId = convId ? `${convId}:${rawToolUseId}` : rawToolUseId;
+    const salvagedInput = extractSalvagedToolInput(trimmed);
 
     if (
       state === "DONE" ||
@@ -251,7 +336,7 @@ function salvageTruncatedJsonLine(
           kind: "tool_call",
           ts,
           name: resolvedTool,
-          input: {},
+          input: salvagedInput,
           toolUseId: rawToolUseId,
         });
       }
@@ -269,13 +354,13 @@ function salvageTruncatedJsonLine(
 
     if (!emittedActiveToolIds.has(scopedToolUseId)) {
       emittedActiveToolIds.add(scopedToolUseId);
-      activeTools.set(scopedToolUseId, { name: resolvedTool, toolUseId: rawToolUseId, parameters: {} });
+      activeTools.set(scopedToolUseId, { name: resolvedTool, toolUseId: rawToolUseId, parameters: salvagedInput });
       return [
         {
           kind: "tool_call",
           ts,
           name: resolvedTool,
-          input: {},
+          input: salvagedInput,
           toolUseId: rawToolUseId,
         },
       ];
@@ -319,9 +404,11 @@ function isNewJsonEventStart(trimmed: string): boolean {
  * - Tracks per-step delta streaming (`streamedAssistantStepIds`, `streamedThinkingStepIds`) and turn-level
  *   assistant text so cumulative `DONE` step summaries or `result.response` payloads do not duplicate
  *   already-streamed text.
- * - Emits deduplicated `system` entries for internal `agy` orchestration steps.
- * - Reassembles multi-line split JSON strings while resetting & salvaging whenever a new JSON event line starts
- *   (preventing `defaultModuleParser` singleton poisoning and never emitting raw JSON).
+ * - Normalizes tool parameters (`command`, `path`, `query`, `url`) so `RunTranscriptView` groups consecutive
+ *   commands/tools and displays human-readable summaries.
+ * - Emits deduplicated `system` entries for internal `agy` orchestration steps without flooding the transcript
+ *   with per-step token usage lines between tool calls.
+ * - Repairs Paperclip secret-redactor quote corruption (`***REDACTED***"`) and salvages truncated JSON lines.
  */
 function createStdoutParser() {
   const activeTools = new Map<string, { name: string; toolUseId: string; parameters: unknown }>();
@@ -331,7 +418,6 @@ function createStdoutParser() {
   const emittedSystemStepStates = new Set<string>();
   let jsonBuffer = "";
   let toolCounter = 0;
-  let lastReportedTotalTokens = 0;
   let allTurnAssistantText = "";
   let lastSegmentAssistantText = "";
 
@@ -341,7 +427,6 @@ function createStdoutParser() {
     streamedAssistantStepIds.clear();
     streamedThinkingStepIds.clear();
     emittedSystemStepStates.clear();
-    lastReportedTotalTokens = 0;
     allTurnAssistantText = "";
     lastSegmentAssistantText = "";
   }
@@ -368,20 +453,7 @@ function createStdoutParser() {
     const stepKey = convPrefix ? `${convPrefix}:${rawStepKey}` : rawStepKey;
     const entries: TranscriptEntry[] = [];
 
-    // 1. Extract interim usage metrics if present -> emit SYSTEM kind
-    const usageObj = safeRecord(update.usage);
-    if (usageObj) {
-      const currentTotal = asNumber(usageObj.total_tokens, 0);
-      if (currentTotal > 0 && currentTotal !== lastReportedTotalTokens) {
-        lastReportedTotalTokens = currentTotal;
-        const usageText = formatUsageSummary(usageObj);
-        if (usageText) {
-          entries.push({ kind: "system", ts, text: usageText });
-        }
-      }
-    }
-
-    // 2. Tool Execution Step (`step_type: "tool"` or explicit tool payload)
+    // 1. Tool Execution Step (`step_type: "tool"` or explicit tool payload)
     const toolInfoObj = safeRecord(update.tool_info) ?? safeRecord(update.tool_call);
     if (stepType === "tool" || Boolean(update.tool_name || toolInfoObj)) {
       const toolName = (
@@ -411,6 +483,7 @@ function createStdoutParser() {
         safeRecord(update.args) ??
         safeRecord(update.input) ??
         {};
+      const normalizedParameters = normalizeToolInput(rawParameters);
 
       // A tool call breaks the current assistant segment
       lastSegmentAssistantText = "";
@@ -424,12 +497,12 @@ function createStdoutParser() {
       ) {
         if (!emittedActiveToolIds.has(scopedToolUseId)) {
           emittedActiveToolIds.add(scopedToolUseId);
-          activeTools.set(scopedToolUseId, { name: toolName, toolUseId, parameters: rawParameters });
+          activeTools.set(scopedToolUseId, { name: toolName, toolUseId, parameters: normalizedParameters });
           entries.push({
             kind: "tool_call",
             ts,
             name: toolName,
-            input: rawParameters,
+            input: normalizedParameters,
             toolUseId,
           });
         }
@@ -464,7 +537,7 @@ function createStdoutParser() {
             kind: "tool_call",
             ts,
             name: toolName,
-            input: rawParameters,
+            input: normalizedParameters,
             toolUseId,
           });
         }
@@ -495,8 +568,14 @@ function createStdoutParser() {
       return entries;
     }
 
-    // 4. Internal Checkpoint
-    if (stepType === "checkpoint") {
+    // 4. Internal Checkpoint / Empty System Message
+    if (
+      stepType === "checkpoint" ||
+      (stepType === "system_message" &&
+        !asString(update.text) &&
+        !asString(update.message) &&
+        !asString(update.title))
+    ) {
       return entries;
     }
 
@@ -720,7 +799,9 @@ function createStdoutParser() {
       }
     } catch {
       try {
-        const sanitized = candidateTrimmed.replace(/[\r\n]+/g, "\\n");
+        const sanitized = candidateTrimmed
+          .replace(/[\r\n]+/g, "\\n")
+          .replace(/\*\*\*REDACTED\*\*\*"(?!\s*[,}\]:])/g, '***REDACTED***\\"');
         const eventObj = safeRecord(JSON.parse(sanitized));
         if (eventObj && (typeof eventObj.event === "string" || typeof eventObj.type === "string")) {
           return processEventObject(eventObj, ts);

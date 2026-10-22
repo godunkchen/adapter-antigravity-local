@@ -1,7 +1,7 @@
 # Design Specification: Paperclip Adapter Contract for Live Task Interaction, Mid-Run Injection, and Streaming Telemetry (`@paperclipai/adapter-antigravity-local`)
 
 - **Document Version:** 1.2 (Approved Baseline Specification + Phase 6 Run Transcript & Sandboxed Worker Resolution)
-- **Target Adapter:** [`@paperclipai/adapter-antigravity-local`](file:///Users/dunk/Documents/adapter-antigravity-local/package.json) (`v2.6.0` $\rightarrow$ `v2.7.2` / Phase 5 & Phase 6)
+- **Target Adapter:** [`@paperclipai/adapter-antigravity-local`](file:///Users/dunk/Documents/adapter-antigravity-local/package.json) (`v2.6.0` $\rightarrow$ `v2.7.3` / Phase 5 & Phase 6)
 - **Reference Implementations:**
   - [`@paperclipai/adapter-claude-local`](file:///Users/dunk/Documents/paperclip/packages/adapters/claude-local/src/server/execute.ts)
   - [`@paperclipai/adapter-cursor-local`](file:///Users/dunk/Documents/paperclip/packages/adapters/cursor-local/src/ui/parse-stdout.ts)

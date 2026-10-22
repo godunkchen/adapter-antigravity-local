@@ -10,7 +10,7 @@ import type { TranscriptEntry } from "@paperclipai/adapter-utils";
 import {
   createStdoutParser as createAntigravityStdoutParser,
   parseStdoutLine as parseAntigravityStdoutLine,
-} from "../ui-parser.js";
+} from "./parser-core.js";
 
 export { createAntigravityStdoutParser, parseAntigravityStdoutLine };
 export type { TranscriptEntry };

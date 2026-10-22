@@ -1,7 +1,7 @@
 # Design Specification: Paperclip Adapter Contract for Live Task Interaction, Mid-Run Injection, and Streaming Telemetry (`@paperclipai/adapter-antigravity-local`)
 
-- **Document Version:** 1.1 (Approved Baseline Specification)
-- **Target Adapter:** [`@paperclipai/adapter-antigravity-local`](file:///Users/dunk/Documents/adapter-antigravity-local/package.json) (`v2.6.0` $\rightarrow$ `v2.7.0` / Phase 5)
+- **Document Version:** 1.2 (Approved Baseline Specification + Phase 6 Run Transcript & Sandboxed Worker Resolution)
+- **Target Adapter:** [`@paperclipai/adapter-antigravity-local`](file:///Users/dunk/Documents/adapter-antigravity-local/package.json) (`v2.6.0` $\rightarrow$ `v2.7.2` / Phase 5 & Phase 6)
 - **Reference Implementations:**
   - [`@paperclipai/adapter-claude-local`](file:///Users/dunk/Documents/paperclip/packages/adapters/claude-local/src/server/execute.ts)
   - [`@paperclipai/adapter-cursor-local`](file:///Users/dunk/Documents/paperclip/packages/adapters/cursor-local/src/ui/parse-stdout.ts)
@@ -292,3 +292,52 @@ Whenever a new version of Google Antigravity CLI (`agy` `v1.3.7+`, `v1.4.x`, etc
 3. **Cumulative `text` vs. Incremental `text_delta` Deduplication (Aligned with `paperclip-runner` & `cursor-local`)**:
    - Stream `text_delta` and `thinking_delta` with `delta: true` (without trimming whitespace) so `appendTranscriptEntry` in Paperclip's UI coalesces consecutive deltas into a single block.
    - Track `streamedAssistantStepIds`, `streamedThinkingStepIds`, and `hasEmittedAssistantInTurn` in `createStdoutParser()` so trailing cumulative `text`/`thinking` on `step_update` (`state: "DONE"`) or `result.response` does not duplicate already-streamed prose, while preserving fallback `assistant` emission when a run or test emits only a non-delta `DONE` or `result` event.
+
+---
+
+## 10. Phase 6 Post-Mortem & Audit: Run Transcript View (`RunTranscriptView`) & Sandboxed Web Worker Resolution (2026-10-22)
+
+During visual verification of the Run Transcript panel (`/agents/:agentId/runs/:runId`), we observed that while **Live Task Streaming** in the Issue Thread (`TaskChatThread`) worked properly (driven by server-side `ctx.onEvent` telemetry), the **Run Transcript panel (`Nice` mode)** still rendered raw unparsed JSON lines inside a `STDOUT` block.
+
+By shifting from remote testing on `oci-sig-1` to a fully local validation pipeline (local Paperclip instance + local `agy` stream-json simulator + Docker `node:20-alpine` verification), we identified and resolved five subtle architectural and runtime bugs across the build pipeline, singleton Web Worker state, and browser Worker lockdown.
+
+### 10.1 Root Causes Identified
+
+1. **Root Cause A — `tsc --module CommonJS` Strict-Mode Block Hoisting & ESM Export Failure**:
+   - Previously, `package.json` compiled `src/ui-parser.ts` using `tsc src/ui-parser.ts --outDir dist --target ES2020 --module CommonJS`.
+   - Because `package.json` declares `"type": "module"`, `dist/ui-parser.js` with CommonJS syntax could not be imported by `dist/ui/parse-stdout.js` in Node ESM (`SyntaxError: The requested module '../ui-parser.js' does not provide an export named 'createStdoutParser'`), nor could it be required by Node CommonJS without `.cjs` extension (`require("./dist/ui-parser.js")` returned `{}`).
+   - Furthermore, `tsc` emits `exports.parseStdoutLine = void 0;` at the top of the file and relies on ES5 function hoisting, whereas `esbuild --format=cjs` binds exports via `__export` getters on `module.exports`.
+
+2. **Root Cause B — Singleton Web Worker State Poisoning Across Turns (`emittedActiveToolIds`, `streamedAssistantStepIds`, `streamedThinkingStepIds`)**:
+   - Paperclip's [`dynamic-loader.ts`](file:///Users/dunk/Documents/paperclip/ui/src/adapters/dynamic-loader.ts) and [`sandboxed-parser-worker.ts`](file:///Users/dunk/Documents/paperclip/ui/src/adapters/sandboxed-parser-worker.ts) initialize **one** Web Worker per adapter type and invoke `parseStdoutLine(line, ts)` (backed by the singleton `defaultModuleParser`) for every line across all runs and turns.
+   - Previously, `emittedActiveToolIds`, `streamedAssistantStepIds`, and `streamedThinkingStepIds` were only cleared when an `"init"` or `"result"` event arrived. Whenever a partial log slice, mid-run join, or subsequent turn reused step indices (`step_index: 1`, `step_index: 2`, etc.) without a preceding `"init"`, `emittedActiveToolIds.has(scopedToolUseId)` evaluated to `true` and **silently dropped tool calls and assistant/thinking steps**.
+
+3. **Root Cause C — `dist/package.json` Self-Referential `./dist/` Paths**:
+   - Previously, `npm run build` ran `cp package.json dist/`, leaving `"main": "./dist/index.js"` and `"./ui-parser": "./dist/ui-parser.js"` inside `dist/package.json`. When Paperclip's `plugin-loader.ts` resolved an adapter pointed at `dist/`, it looked for `dist/dist/index.js` and failed.
+
+4. **Root Cause D — Duplicate Assistant Text in `RunTranscriptView` on `result` Events**:
+   - In [`RunTranscriptView.tsx:699-711`](file:///Users/dunk/Documents/paperclip/ui/src/components/transcript/RunTranscriptView.tsx#L699-L711), Paperclip renders every `{ kind: "result", text, ... }` entry as a markdown block displaying `entry.text`.
+   - Even though `ui-parser.ts` suppressed the duplicate `{ kind: "assistant" }` entry on `result` when `text_delta` had already streamed the response, it still passed `text: responseText` on the `{ kind: "result" }` entry—causing the entire final markdown response to be rendered **twice** back-to-back in `RunTranscriptView`!
+
+5. **Root Cause E — Chromium `WorkerGlobalScope` Getter-Only Property Crash in `sandboxed-parser-worker.ts`**:
+   - In [`ui/src/adapters/sandboxed-parser-worker.ts:58,79`](file:///Users/dunk/Documents/paperclip/ui/src/adapters/sandboxed-parser-worker.ts#L58), the inline worker bootstrap runs under `"use strict";` and executes:
+     ```js
+     self.caches = _undefined;
+     ...
+     self.indexedDB = _undefined;
+     ```
+   - In modern Chromium (Chrome 151+), `caches` and `indexedDB` on `WorkerGlobalScope` are getter-only prototype properties. Assigning to them in strict mode immediately throws:
+     `Uncaught TypeError: Cannot set property caches of #<WorkerGlobalScope> which has only a getter`
+     **before** `self.onmessage` is registered!
+   - This caused `initSandboxedWorker()` in `dynamic-loader.ts` to fail on `worker.onerror`, add `"antigravity_local"` to `failedLoads`, and permanently fall back to `processUIAdapter` (which renders raw NDJSON lines as `STDOUT`).
+
+### 10.2 Implemented Fixes & Architectural Improvements
+
+| Area | File(s) Modified | Fix Description |
+| :--- | :--- | :--- |
+| **1. Zero-Dependency Parser Core & Dual ESM/CJS Build** | [`src/ui/parser-core.ts`](file:///Users/dunk/Documents/adapter-antigravity-local/src/ui/parser-core.ts), [`src/ui/parse-stdout.ts`](file:///Users/dunk/Documents/adapter-antigravity-local/src/ui/parse-stdout.ts), [`src/ui-parser.ts`](file:///Users/dunk/Documents/adapter-antigravity-local/src/ui-parser.ts), [`package.json`](file:///Users/dunk/Documents/adapter-antigravity-local/package.json) | Extracted all parsing logic into `src/ui/parser-core.ts` (zero runtime imports). `tsc` compiles ESM modules (`dist/ui/parser-core.js`, `dist/ui/parse-stdout.js`), while `esbuild src/ui-parser.ts --bundle --platform=neutral --target=es2020 --format=cjs` produces `dist/ui-parser.js` and `dist/ui-parser.cjs` (aligned with Paperclip's `hermes/ui-parser.cjs`). |
+| **2. Per-Step Completion Cleanup for Singleton Worker Safety** | [`src/ui/parser-core.ts`](file:///Users/dunk/Documents/adapter-antigravity-local/src/ui/parser-core.ts) | Immediately removes `scopedToolUseId` from `emittedActiveToolIds` and `stepKey` from `streamedThinkingStepIds` / `streamedAssistantStepIds` when a step transitions to `DONE` / `COMPLETED` / `ERROR` / `FAILED`. Ensures repeated `ACTIVE` updates within the same step are deduplicated while future turns reusing the same `step_index` are never dropped. |
+| **3. Clean `result` Entry Text Deduplication** | [`src/ui/parser-core.ts`](file:///Users/dunk/Documents/adapter-antigravity-local/src/ui/parser-core.ts) | When `alreadyStreamedSameResponse` is true on a non-error `result` event, sets `result.text = "Completed"` instead of repeating `responseText`. In `RunTranscriptView`, the streamed assistant markdown renders once, followed by a clean `RESULT Completed (input / output / $cost)` summary line. |
+| **4. Self-Contained `dist/package.json` Generation** | [`package.json`](file:///Users/dunk/Documents/adapter-antigravity-local/package.json) | `npm run build` automatically strips `./dist/` prefixes when writing `dist/package.json` so Paperclip's `plugin-loader.ts` works seamlessly whether pointed at the repo root or `dist/`. |
+| **5. Paperclip UI Compatibility Test Suite & Local Docker Validation** | [`tests/unit/paperclip-ui-compat.test.ts`](file:///Users/dunk/Documents/adapter-antigravity-local/tests/unit/paperclip-ui-compat.test.ts), [`AGENTS.md`](file:///Users/dunk/Documents/adapter-antigravity-local/AGENTS.md) | Added unit tests verifying Paperclip's exact `sandboxed-parser-worker.ts` evaluation, `buildTranscript` delta coalescing, `plugin-loader.ts` resolution, and multi-turn singleton worker execution. Verified end-to-end in both local `node:20-alpine` Docker containers and a live local Paperclip (`v2026.1012.0`) visual environment. |
+| **6. Paperclip Upstream Worker Lockdown Note** | `ui/src/adapters/sandboxed-parser-worker.ts` (Paperclip Host) | In Paperclip's `sandboxed-parser-worker.ts`, `self.caches = _undefined` and `self.indexedDB = _undefined` should use `try { Object.defineProperty(self, "caches", { value: _undefined, configurable: true }); } catch {}` (matching lines 66 and 72 for `URL.createObjectURL` and `navigator.sendBeacon`) to avoid throwing `TypeError` on getter-only properties in Chrome 151+ strict-mode workers. |

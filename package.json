@@ -1,10 +1,11 @@
 {
   "name": "@weslleycapelari/adapter-antigravity-local",
-  "version": "2.7.3",
+  "version": "2.7.4",
   "license": "MIT",
   "homepage": "https://github.com/weslleycapelari/adapter-antigravity-local",
   "scripts": {
     "build": "tsc && npx esbuild src/index.ts --bundle --platform=node --format=esm --outfile=dist/index.js --external:@paperclipai/adapter-utils --external:picocolors --external:node:* && npx esbuild src/ui-parser.ts --bundle --platform=neutral --target=es2020 --format=cjs --outfile=dist/ui-parser.js && cp dist/ui-parser.js dist/ui-parser.cjs && node -e \"const fs=require('fs'),p=JSON.parse(fs.readFileSync('package.json','utf8'));const r=(o)=>JSON.parse(JSON.stringify(o).replace(/\\.\\/dist\\//g,'./'));p.main=r(p.main);p.exports=r(p.exports);if(p.publishConfig)p.publishConfig.exports=r(p.publishConfig.exports);fs.writeFileSync('dist/package.json',JSON.stringify(p,null,2));\"",
+    "fix-worker": "node scripts/fix-worker-lockdown.cjs",
     "clean": "rm -rf dist",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
@@ -54,6 +55,7 @@
   },
   "files": [
     "dist",
+    "scripts",
     "skills"
   ],
   "dependencies": {

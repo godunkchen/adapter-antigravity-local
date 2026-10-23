@@ -45,6 +45,7 @@ npx vitest run -t "dedupeModels"
 - `src/ui/parse-stdout.ts`: ESM wrapper importing from `./parser-core.js` for static ESM consumers (`./ui` export).
 - `src/ui-parser.ts`: Entrypoint bundled by `esbuild` into `dist/ui-parser.js` and `dist/ui-parser.cjs` for Paperclip's dynamic Web Worker (`GET /api/adapters/antigravity_local/ui-parser.js`).
 - **Singleton Worker Safety**: Paperclip's `sandboxed-parser-worker.ts` evaluates `ui-parser.js` once per session and calls `parseStdoutLine(line, ts)` across multiple turns. When a tool or step reaches `DONE`/`COMPLETED`/`ERROR`, clean up its step ID from `emittedActiveToolIds`, `streamedAssistantStepIds`, and `streamedThinkingStepIds` so subsequent turns reusing step indices (`1`, `2`, ...) are never dropped.
+- **Paperclip Worker Lockdown Auto-Patcher (`src/server/worker-lockdown-fix.ts`, `scripts/fix-worker-lockdown.cjs`)**: Paperclip `v2026.1012.0` has an upstream bug ([#16143](https://github.com/paperclipai/paperclip/issues/16143) / [#12223](https://github.com/paperclipai/paperclip/issues/12223)) where `self.caches = _undefined;` throws in strict-mode Web Workers. `createServerAdapter()` automatically runs `ensurePaperclipWorkerLockdownPatched()` on startup and adapter reload (`POST /api/adapters/antigravity_local/reload`), and `npm run fix-worker` can be run manually.
 
 ### 2. Subprocess & Environment Sanitization
 - `src/server/execute.ts` spawns `agy` using `runAdapterExecutionTargetProcess` from `@paperclipai/adapter-utils`.

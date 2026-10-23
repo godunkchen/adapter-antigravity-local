@@ -1,8 +1,13 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { describe, it, expect } from "vitest";
 import { createStdoutParser, parseStdoutLine } from "../../src/ui-parser.js";
+import {
+  patchWorkerLockdownSource,
+  ensurePaperclipWorkerLockdownPatched,
+} from "../../src/server/worker-lockdown-fix.js";
 import type { TranscriptEntry } from "@paperclipai/adapter-utils";
 
 /**
@@ -318,5 +323,51 @@ describe("Paperclip UI Compatibility (RunTranscriptView & TaskChatThread)", () =
     expect(turn2Call[0]?.kind).toBe("tool_call");
     expect(turn2Result).toHaveLength(1);
     expect(turn2Result[0]?.kind).toBe("tool_result");
+  });
+
+  it("patches Paperclip sandboxed-parser-worker.ts and compiled UI bundles idempotently (Workaround for #16143 / #12223)", () => {
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worker-fix-test-"));
+    try {
+      const workerSourceDir = path.join(tmpRoot, "ui", "src", "adapters");
+      const assetDir = path.join(tmpRoot, "ui", "dist", "assets");
+      fs.mkdirSync(workerSourceDir, { recursive: true });
+      fs.mkdirSync(assetDir, { recursive: true });
+
+      const unpatchedTs = [
+        'const WORKER_BOOTSTRAP = `',
+        '"use strict";',
+        'const _undefined = void 0;',
+        'self.fetch = _undefined;',
+        'self.caches = _undefined;',
+        'self.indexedDB = _undefined;',
+        '`;',
+      ].join("\n");
+
+      const unpatchedBundle = 'var CJe=`"use strict";const _undefined=void 0;self.fetch=_undefined;self.caches=_undefined;self.indexedDB=_undefined;`;';
+
+      const tsFile = path.join(workerSourceDir, "sandboxed-parser-worker.ts");
+      const bundleFile = path.join(assetDir, "index-test123.js");
+      fs.writeFileSync(tsFile, unpatchedTs, "utf8");
+      fs.writeFileSync(bundleFile, unpatchedBundle, "utf8");
+
+      // First run patches both files
+      const patchedFirst = ensurePaperclipWorkerLockdownPatched([tmpRoot]);
+      expect(patchedFirst).toContain(tsFile);
+      expect(patchedFirst).toContain(bundleFile);
+
+      const updatedTs = fs.readFileSync(tsFile, "utf8");
+      expect(updatedTs).toContain("try { self.caches = _undefined; } catch {}");
+      expect(updatedTs).toContain("try { self.indexedDB = _undefined; } catch {}");
+
+      const updatedBundle = fs.readFileSync(bundleFile, "utf8");
+      expect(updatedBundle).toContain("try { self.caches = _undefined; } catch {}");
+
+      // Second run is a no-op (idempotent)
+      const patchedSecond = ensurePaperclipWorkerLockdownPatched([tmpRoot]);
+      expect(patchedSecond).toEqual([]);
+      expect(fs.readFileSync(tsFile, "utf8")).toBe(updatedTs);
+    } finally {
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
   });
 });

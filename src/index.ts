@@ -9,6 +9,7 @@ import {
   sessionCodec,
 } from "./server/index.js";
 import { listAntigravitySkills, syncAntigravitySkills } from "./server/skills.js";
+import { ensurePaperclipWorkerLockdownPatched } from "./server/worker-lockdown-fix.js";
 import type { AntigravityModelDefinition, AntigravityModelProfileDefinition } from "./types.js";
 
 export const type = "antigravity_local";
@@ -98,6 +99,7 @@ Notes:
 `;
 
 export function createServerAdapter(): ServerAdapterModule {
+  ensurePaperclipWorkerLockdownPatched();
   return {
     type,
     execute,

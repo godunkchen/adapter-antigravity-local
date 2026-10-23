@@ -61,6 +61,11 @@ export {
   dedupeModels,
   resetAntigravityModelsCacheForTests,
 } from "./models.js";
+export {
+  patchWorkerLockdownSource,
+  patchWorkerLockdownFile,
+  ensurePaperclipWorkerLockdownPatched,
+} from "./worker-lockdown-fix.js";
 
 import type { AdapterSessionCodec } from "@paperclipai/adapter-utils";
 import type { AntigravitySessionParams } from "../types.js";
